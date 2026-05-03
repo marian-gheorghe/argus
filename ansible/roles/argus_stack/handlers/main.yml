@@ -1,0 +1,51 @@
+---
+# Reload --user systemd manager state when a unit file changes. Each daemon
+# also has its own restart handler so a config change to clawhip doesn't
+# bounce the bridge.
+
+- name: Reload systemd --user
+  ansible.builtin.systemd:
+    daemon_reload: true
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+
+- name: Restart clawhip
+  ansible.builtin.systemd:
+    name: clawhip.service
+    state: restarted
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+
+- name: Restart omc-wait
+  ansible.builtin.systemd:
+    name: omc-wait.service
+    state: restarted
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+
+- name: Restart telegram-bridge
+  ansible.builtin.systemd:
+    name: telegram-bridge.service
+    state: restarted
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+
+- name: Restart watchdog
+  ansible.builtin.systemd:
+    name: watchdog.service
+    state: restarted
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+
+- name: Restart recovery
+  ansible.builtin.systemd:
+    name: recovery.service
+    state: restarted
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"

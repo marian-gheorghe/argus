@@ -1,5 +1,77 @@
 ---
-# Stub — populated in the systemd-units commit.
-- name: Services — stub
-  ansible.builtin.debug:
-    msg: "argus_stack/tasks/services.yml is a stub; populated in the systemd-units commit"
+# Argus — install systemd --user units from the repo's templates.
+#
+# The .j2 templates live in <repo>/systemd/. We render them via the template
+# module (not copy) so the {{ argus_*_bin }} and Environment values get
+# substituted from this role's defaults / group_vars. Each render notifies
+# the corresponding daemon's restart handler so a config change actually
+# bounces the unit.
+#
+# Idempotent: ansible's template module diff-renders, so a re-run with no
+# change is a no-op (no notify, no restart).
+
+- name: systemd — render clawhip.service unit
+  ansible.builtin.template:
+    src: "{{ argus_repo_dir }}/systemd/clawhip.service.j2"
+    dest: "{{ argus_systemd_user_dir }}/clawhip.service"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+  become: true
+  notify:
+    - Reload systemd --user
+    - Restart clawhip
+
+- name: systemd — render omc-wait.service unit
+  ansible.builtin.template:
+    src: "{{ argus_repo_dir }}/systemd/omc-wait.service.j2"
+    dest: "{{ argus_systemd_user_dir }}/omc-wait.service"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+  become: true
+  notify:
+    - Reload systemd --user
+    - Restart omc-wait
+
+- name: systemd — render telegram-bridge.service unit
+  ansible.builtin.template:
+    src: "{{ argus_repo_dir }}/systemd/telegram-bridge.service.j2"
+    dest: "{{ argus_systemd_user_dir }}/telegram-bridge.service"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+  become: true
+  notify:
+    - Reload systemd --user
+    - Restart telegram-bridge
+
+- name: systemd — render watchdog.service unit
+  ansible.builtin.template:
+    src: "{{ argus_repo_dir }}/systemd/watchdog.service.j2"
+    dest: "{{ argus_systemd_user_dir }}/watchdog.service"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+  become: true
+  notify:
+    - Reload systemd --user
+    - Restart watchdog
+
+- name: systemd — render recovery.service unit
+  ansible.builtin.template:
+    src: "{{ argus_repo_dir }}/systemd/recovery.service.j2"
+    dest: "{{ argus_systemd_user_dir }}/recovery.service"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+  become: true
+  notify:
+    - Reload systemd --user
+    - Restart recovery
+
+# Force the daemon-reload to run before enable+start (which is in start.yml,
+# guarded by argus_stack_start_services). Otherwise a freshly-rendered unit
+# isn't yet visible to systemctl when start.yml fires.
+- name: systemd — flush handlers (daemon-reload before enable/start)
+  ansible.builtin.meta: flush_handlers
