@@ -25,11 +25,11 @@ findings as you go; do NOT delete history. Future-you (and the chaos suite +
 - [x] Task 2.3: launchd plist (Mac) + smoke test
 
 ### Block 3 — Recovery Matrix Automation
-- [ ] Task 3.1: Ralph iteration cap + fake-completion guard
-- [ ] Task 3.2: tmux stale-detect → auto-restart with checkpoint replay
-- [ ] Task 3.3: Provider-outage fallback (API ↔ Max20)
-- [ ] Task 3.4: Crash budget enforcement
-- [ ] Task 3.5: Recovery integration smoke (chaos suite)
+- [x] Task 3.1: Ralph iteration cap + fake-completion guard
+- [x] Task 3.2: tmux stale-detect → auto-restart with checkpoint replay
+- [x] Task 3.3: Provider-outage fallback (API ↔ Max20)
+- [x] Task 3.4: Crash budget enforcement
+- [x] Task 3.5: Recovery integration smoke (chaos suite)
 
 ### Block 4 — VPS Provisioning (Ansible)
 - [ ] Task 4.1: Ansible inventory + host bootstrap role
@@ -382,3 +382,233 @@ documented expectations:
   to Block 6 (Smoke), where it's run against the full live stack. The
   CLI smoke above only validates the watchdog's wiring; full
   verification needs an actually-running clawhip + bridge to bounce.
+
+### 2026-05-03 — Block 3: Recovery matrix automation (Tasks 3.1, 3.2, 3.3, 3.4, 3.5)
+
+Implemented across nine commits on `phase-c/hardening`:
+
+1. `phase-c: bootstrap recovery Bun project + manifest store with atomic locking`
+2. `phase-c: ralph iteration cap + fake-completion guard (Stop hooks)`
+3. `phase-c: tmux stale-detect restart with checkpoint replay`
+4. `phase-c: provider-outage credential fallback`
+5. `phase-c: crash budget enforcement (3 strikes -> halt)`
+6. `phase-c: argus-recovery CLI + HTTP serve + main entry`
+7. `phase-c: section_recovery install + Stop hook registration + clawhip routes`
+8. `phase-c: chaos suite runbook (6 scenarios per design 8a-f)`
+9. `phase-c: phase-c runbook entry for Block 3` (this commit)
+
+#### What landed
+
+- `scripts/recovery/` — full Bun TS project mirroring
+  `scripts/cost-tracker/` + `scripts/watchdog/` layout. Strict TS,
+  biome, bun:test, pino + zod deps. Committed `bun.lock` for
+  reproducibility (.gitignore negation).
+- `src/manifest.ts` — `ManifestStore` with atomic JSON writes
+  (tmp + fsync + rename, mode 0600) and cross-process locking via a
+  sidecar `manifest.lock` file (O_EXCL + spin-wait up to 2s with 10ms
+  intervals). Lock is unlinked on every exit path including throws.
+  zod schema uses `passthrough()` for forward-compat with newer
+  builds; required fields surface corruption on read rather than
+  silently defaulting. Manifest path:
+  `$OMC_STATE_DIR/runs/<run_id>/manifest.json`.
+- `src/emit.ts` — `RecoveryEmitter` interface + `MockEmitter` (test)
+  + `ClawhipEmitter` (production, shells out to `clawhip send` via
+  injectable SpawnFn). Mirrors cost-tracker's emit pattern. Each
+  event carries deterministic `event_id = "<event>:<run_id>"` for
+  defense-in-depth dedup at clawhip's outbound queue.
+- `src/ralph-cap.ts` — Stop-hook entry. Increments
+  `manifest.ralph_iterations[task_id]`; on EXACT crossing of
+  MAX_ITERATIONS (default 30) emits `agent.loop-exhausted` WARN and
+  sets `next_prompt_prepend`; on EXACT 2*MAX crossing emits PAGE.
+  Counter is incremented BEFORE the emit so a clawhip outage doesn't
+  risk double-counting on retry.
+- `src/fake-completion-guard.ts` — Stop-hook entry. Reads agent
+  transcript from stdin, regex-detects `<promise>DONE</promise>`
+  (case-insensitive, whitespace-tolerant), checks
+  `manifest.last_verify_pass_at` against a 5-min freshness window.
+  Stale or missing => emits `agent.fake-completion` WARN and stamps
+  `next_prompt_prepend`. Manifest update happens BEFORE the emit so
+  the corrective injection survives a clawhip outage.
+- `src/tmux-restart.ts` — invoked by clawhip's `tmux.stale` route.
+  Parses `run_id` from session_name (`<run_id>-leader`), restores
+  latest checkpoint files (notepad.md, project-memory.json, plans/)
+  into `runs/<run_id>/`, then re-launches tmux with
+  `omc team --resume <run_id>`. One-shot: marks
+  `tmux_restart_attempted` in the manifest BEFORE spawning tmux to
+  prevent infinite retries on partial-success spawn failures. Second
+  stale within the run emits `tmux.restart-exhausted` PAGE.
+- `src/provider-fallback.ts` — invoked by clawhip's `provider.outage`
+  route. Reads `~/.argus/secrets.env` for credential availability
+  (CLAUDE_CODE_OAUTH_TOKEN for Max20, ANTHROPIC_API_KEY for API).
+  Toggles between modes; persists to manifest AND
+  `$stateDir/provider-override.env`. Anti-flap: 60s window via
+  `provider_mode_switched_at` passthrough field. After `pageAfterMs`
+  (2h default) of continuous outage emits `provider.outage-prolonged`
+  PAGE.
+- `src/crash-budget.ts` — `runCrashBudgetBump`: increments
+  `manifest.crash_count`; at threshold (3) emits
+  `crash-budget-exhausted` CRITICAL and shells out via injected
+  `cancelRun` (production: `omc cancel <run_id>`). Idempotent: bumps
+  4, 5, ... still increment but don't re-emit/re-cancel. Auto-creates
+  manifest if missing.
+- `src/cli.ts` — single binary, dual entry. CLI subcommands
+  (`ralph-cap`, `fake-completion`, `tmux-restart --session <name>`,
+  `provider-fallback`, `budget bump <run_id> <reason>`); HTTP serve
+  mode (`serve --port 9601`) with POST routes
+  (`/tmux-restart`, `/provider-fallback`, `/budget/bump`,
+  `/ralph-cap`, `/fake-completion`) + GET `/healthz`. Path-routing
+  checks known paths BEFORE method validation so unknown paths
+  return 404 (not 405).
+- `scripts/recovery/run.sh` — thin launchd wrapper resolving bun
+  binary + exec'ing `argus-recovery serve`. ARGUS_RECOVERY_PORT env
+  override (default 9601).
+- `launchd/com.argus.recovery.plist` — KeepAlive=true,
+  RunAtLoad=true. Env: ARGUS_RECOVERY_PORT=9601,
+  RALPH_MAX_ITERATIONS=30, FAKE_COMPLETION_FRESHNESS_MS=300000,
+  PROVIDER_PAGE_AFTER_MS=7200000 (2h), CRASH_BUDGET_THRESHOLD=3.
+- `scripts/install-mac.sh` — new `section_recovery` slotted between
+  `section_watchdog` and `section_launchd`. Renders the launchd plist
+  (atomic-write + plutil-lint), generates Stop-hook wrapper at
+  `~/.argus/recovery-stop-hook.sh` (calls argus-recovery ralph-cap
+  then fake-completion in sequence; both exit 0 always),
+  idempotently registers the wrapper as a Stop hook in
+  `~/.claude/settings.json` via jq.
+- `config/clawhip.toml.example` — new routes for `tmux.stale` and
+  `provider.outage` to `http://127.0.0.1:9601`. Recovery WARN events
+  route to Discord; PAGE events to bridge `/webhook/page`;
+  CRITICAL (`crash-budget-exhausted`) to bridge `/webhook/critical`.
+- `docs/runbooks/chaos-suite.md` — six scenarios mirroring design §8
+  modes (a-f) plus a composite crash-budget scenario. Each lists
+  failure description, inject command, expected detection window,
+  expected auto-response, expected escalation, manual cleanup. Pass/
+  fail criteria + operator log table at the foot.
+
+#### Key design notes
+
+- **Manifest lock mechanism**: O_EXCL on a sidecar `manifest.lock`
+  file with a 2s spin-wait. Chosen over sqlite advisory locks for
+  zero extra deps and identical Linux/macOS semantics. The file-lock
+  pattern works because every recovery script's `update()` is a
+  short read-modify-write on a single JSON; for higher-contention
+  scenarios a sqlite-backed lock (or actual sqlite-stored manifest)
+  would be a drop-in replacement. The lock-removal path uses
+  try/catch on both the close AND the unlink so a partial lock
+  state never wedges the run permanently.
+- **CLI vs HTTP rationale**: clawhip's webhook sink is HTTP-only,
+  but OMC's Stop hook is exec-only. We could (a) build a separate
+  HTTP receiver, (b) extend the bridge with recovery routes, or (c)
+  give argus-recovery dual entry. We picked (c) because it keeps
+  recovery's concerns in one binary and avoids bloating the bridge
+  with cross-cutting failure-handling. Bun.serve makes the HTTP path
+  trivial — no separate framework. The Stop-hook wrapper still uses
+  the CLI path because it's lower latency than going through HTTP
+  for a hook that fires on every agent message-end.
+- **Manifest schema decisions**: passthrough() lets newer builds
+  add fields (e.g., `provider_mode_switched_at`, used for anti-flap)
+  without losing them on round-trip through an older recovery
+  binary. Required fields (run_id, started_at, state) surface
+  corruption on read — better to fail loudly than to silently
+  default-construct a manifest that loses the actual state. Counter
+  fields (crash_count, ralph_iterations) all default to zero/empty
+  via z.default() so a partially-bootstrapped manifest from before
+  Block 3 still validates.
+- **Idempotent threshold semantics**: every recovery script that
+  emits at a threshold (ralph-cap at 30/60, crash-budget at 3) only
+  fires on the EXACT crossing. ralph-cap at count=31 stays silent;
+  crash-budget at count=4 stays silent. The counters still
+  increment so the post-halt strike trail remains visible, but the
+  emission and the side effect (omc cancel, prompt prepend) only
+  happen once per run.
+- **Persistence-before-emit pattern**: every script that mutates
+  manifest state does the manifest write BEFORE the clawhip emit. A
+  clawhip outage during recovery's own emit path must not lose the
+  corrective state change — the next agent turn / next fallback
+  evaluation needs to see the persisted decision. This means an
+  emit failure logs to stderr but doesn't roll back. Defense in
+  depth: the next manifest read picks up where the failed emit left
+  off.
+- **Crash-resistance**: every entry function is wrapped in a
+  top-level try/catch that returns 0. Hook crashes never block the
+  agent. Missing manifest is a silent no-op (don't break the agent
+  if OMC hasn't seeded state yet). Malformed stdin is logged but
+  doesn't crash. Emit failure is logged but doesn't propagate.
+
+#### Verification
+
+Run from `scripts/recovery/`:
+
+- `bun install` — 45 packages, lockfile committed
+- `bun run typecheck` — clean (`tsc --noEmit`)
+- `bun test` — 68 pass / 0 fail / 176 expect() calls across 7 files
+  - 10 manifest tests (read/write/update/concurrency/cleanup)
+  - 10 ralph-cap tests (no run_id / no manifest / threshold / 2x
+    threshold / idempotency / emit failure / unexpected throw)
+  - 8 fake-completion-guard tests (no claim / fresh verify / stale
+    verify / no verify / missing manifest / no run_id / malformed
+    stdin / regex variants / emit failure)
+  - 7 tmux-restart tests (happy path / second-attempt PAGE /
+    bad session name / missing manifest / no checkpoint dir /
+    latest-checkpoint selection / tmux failure)
+  - 8 provider-fallback tests (max20→api / api→max20 / no fallback
+    creds / missing secrets.env / anti-flap / outage-prolonged
+    PAGE / missing manifest / no run_id)
+  - 8 crash-budget tests (first bump / threshold crossing /
+    idempotency / missing manifest auto-create / emit failure /
+    cancelRun failure / custom threshold / payload contents)
+  - 17 CLI tests (9 dispatch + 8 HTTP routes)
+- `bun run lint` — clean (biome)
+- `bash -n scripts/install-mac.sh` — clean
+- `bash -n scripts/recovery/run.sh` — clean
+- Rendered plist passes `plutil -lint` with zero residual `__TOKEN__`
+  placeholders.
+
+CLI smoke from repo root:
+
+```
+$ echo '{}' | OMC_STATE_DIR=/tmp/argus-cli-smoke OMC_CURRENT_RUN_ID=run-smoke \
+    bun run scripts/recovery/src/cli.ts ralph-cap
+$ echo $?
+0
+```
+
+```
+$ bun run scripts/recovery/src/cli.ts unknown-cmd
+unknown command: unknown-cmd
+argus-recovery <command> [args]
+...
+$ echo $?
+2
+```
+
+Behavior matches design: missing manifest is a silent no-op (exit 0),
+unknown command returns exit 2 with usage. Hook crash-resistance
+verified.
+
+#### Deferred / open items
+
+- **Live chaos verification of all six scenarios** is deferred to
+  Block 6 (Smoke). The chaos suite runbook
+  (`docs/runbooks/chaos-suite.md`) lists each scenario with reproducible
+  inject + expected-outcome steps; running them against the live Mac
+  stack happens after Block 4 (VPS provisioning) and before Block 6's
+  72h dry-run.
+- **`argus-recovery serve` is not registered as a watchdog target**
+  in Block 2's watchdog config — it's a leaf in the dependency
+  graph (recovery doesn't itself require monitoring; if it dies,
+  launchd KeepAlive=true respawns it). If the next phase reveals
+  silent-failure edge cases for the recovery server itself, add a
+  HealthCheck to Block 2.
+- **Provider-fallback's outage-resolution detection** is not
+  implemented yet. Today, `provider_outage_started_at` is set on
+  switch but never cleared automatically. A Phase D extension
+  should add a periodic poll (every 5 min) that verifies the
+  preferred provider is healthy and clears the outage stamp +
+  switches back. Block 3 is the in-the-moment auto-fallback; the
+  closing-the-loop probe is out of scope.
+- **`tmux-restart` checkpoint discovery** uses a simple lexicographic
+  sort on the checkpoint directory names. This requires checkpoint
+  names to be sortable timestamps (`<YYYYMMDD>T<HHMMSS>Z` format).
+  OMC's checkpoint emitter follows this convention today; if it
+  changes, recovery's discovery breaks silently (uses stale
+  checkpoint). Phase C+ idea: read a `latest` symlink that OMC
+  maintains.
