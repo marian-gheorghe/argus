@@ -290,6 +290,50 @@ section_bridge() {
   log "  bridge will start at next launchctl load (or reboot)"
 }
 
+# Phase C / Block 2 — render the watchdog launchd plist.
+# Lighter than section_bridge (no secrets to source); the watchdog only needs
+# paths + intervals + access to launchctl/pgrep/fetch and (as the dead-man's
+# fallback) `omc emit`. KeepAlive=true makes launchd the meta-watchdog.
+section_watchdog() {
+  log "Installing launchd plist for the watchdog (Phase C Block 2)"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.argus/logs" "$HOME/.argus/state"
+
+  local watchdog_dir bun_bin
+  watchdog_dir="$(pwd)/scripts/watchdog"
+  [[ -x "$watchdog_dir/run.sh" ]] || fail "Missing or non-executable: $watchdog_dir/run.sh"
+
+  if [[ -x "$HOME/.bun/bin/bun" ]]; then
+    bun_bin="$HOME/.bun/bin/bun"
+  elif command -v bun >/dev/null 2>&1; then
+    bun_bin="$(command -v bun)"
+  else
+    fail "bun not on PATH and not at \$HOME/.bun/bin/bun — section_bun should have installed it"
+  fi
+
+  local label="com.argus.watchdog"
+  local src="$(pwd)/launchd/$label.plist"
+  local dst="$HOME/Library/LaunchAgents/$label.plist"
+  local tmp="$dst.tmp.$$"
+  [[ -f "$src" ]] || fail "Missing template: $src"
+  log "  rendering $label"
+  # Atomic-write: tmp + chmod + mv.
+  sed \
+    -e "s|__BUN_BIN__|$bun_bin|g" \
+    -e "s|__WATCHDOG_DIR__|$watchdog_dir|g" \
+    -e "s|__USER_PATH__|$PATH|g" \
+    -e "s|__HOME__|$HOME|g" \
+    -e "s|__OMC_STATE_DIR__|$OMC_STATE_DIR|g" \
+    "$src" > "$tmp"
+  chmod 644 "$tmp"
+  mv "$tmp" "$dst"
+  plutil -lint "$dst" >/dev/null || fail "Rendered $dst failed plutil -lint"
+  ! grep -q '__[A-Z_]*__' "$dst" || \
+    fail "Rendered $dst still contains placeholder tokens — sed substitution failed"
+
+  log "  plist installed at $dst"
+  log "  watchdog will start at next launchctl load (or reboot)"
+}
+
 section_launchd() {
   log "Installing launchd plists for clawhip and omc wait"
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.argus/logs"
@@ -383,6 +427,7 @@ main() {
   section_hook_bridge
   section_cost_tracker
   section_bridge
+  section_watchdog
   section_launchd
   section_cloudflared
   log "Phase A install complete."
