@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.env
+.env.local
+.env.test
+
+# Override repo-root ignore: commit lockfile here for reproducible installs
+# (VPS Phase C provisioning needs deterministic deps)
+!bun.lock

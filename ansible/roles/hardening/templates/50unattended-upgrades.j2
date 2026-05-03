@@ -1,0 +1,18 @@
+{{ ansible_managed | comment }}
+// Argus — unattended-upgrades scope. Security-only by default to avoid
+// surprise restarts on a long-running marathon agent run.
+
+Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+{% if not hardening_unattended_security_only %}
+        "${distro_id}:${distro_codename}-updates";
+{% endif %}
+};
+
+Unattended-Upgrade::Package-Blacklist {
+};
+
+Unattended-Upgrade::DevRelease "auto";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Mail "";

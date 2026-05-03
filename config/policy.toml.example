@@ -1,0 +1,25 @@
+# Argus — cost & billing policy.
+# Lives at $HOME/.claude/omc/argus/policy.toml after install.
+#
+# `billing = "max20"` (default): cost-tracker hook is a no-op. No spend tracked.
+# `billing = "api"` :              cost-tracker accumulates spend per run and
+#                                  emits cost.warn / cost.page / cost.kill at
+#                                  the configured ratios of api_ceiling_eur.
+
+[default]
+billing = "max20"
+api_ceiling_eur = 50
+api_ceiling_overridable = true
+
+[tier_thresholds]
+warn = 0.75
+page = 1.00
+kill = 1.10
+
+[tier_routing]
+exploration = "haiku"
+routine = "sonnet"
+architecture = "opus"
+critic = "opus"
+verify = "sonnet"
+learner = "haiku"

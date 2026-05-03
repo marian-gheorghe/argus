@@ -1,0 +1,25 @@
+---
+# Argus — molecule converge play. Applies the safe-in-docker subset of
+# roles. argus_stack + tailscale + nginx are deliberately skipped here
+# (see molecule.yml header).
+
+- hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Wait for systemd to be ready inside the container
+      ansible.builtin.command: systemctl is-system-running --wait
+      register: systemd_ready
+      changed_when: false
+      failed_when: false
+      retries: 5
+      delay: 3
+
+  roles:
+    - role: common
+    - role: argus_user
+    - role: hardening
+      vars:
+        # Don't lock root SSH out of the container.
+        hardening_disable_root_ssh: false

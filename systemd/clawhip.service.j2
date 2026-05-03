@@ -1,0 +1,28 @@
+{{ ansible_managed | comment }}
+# Argus — clawhip systemd --user unit. Mirrors com.argus.clawhip.plist.
+# clawhip is the observability sidecar (Discord routine + Telegram escalations).
+
+[Unit]
+Description=Argus clawhip observability sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ argus_clawhip_bin }} serve
+Restart=always
+RestartSec=5
+Environment=HOME={{ argus_user_home }}
+Environment=PATH={{ argus_cargo_bin_dir }}:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:{{ argus_argus_dir }}/logs/clawhip.out.log
+StandardError=append:{{ argus_argus_dir }}/logs/clawhip.err.log
+
+# Hardening — clawhip only needs read of ~/.clawhip + outbound network.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ argus_argus_dir }}/logs {{ argus_clawhip_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,54 @@
+---
+# Argus — molecule default scenario. Smoke-tests the syntax + small role
+# correctness on a docker:ubuntu-24.04 container.
+#
+# CRITICAL — molecule's coverage here is best-effort:
+#   - systemd --user units: `systemctl --user` requires a logind session,
+#     which docker-in-docker doesn't provide reliably.
+#   - tailscale: needs /dev/net/tun + iptables + a real authkey.
+#   - certbot: needs DNS + an external HTTP-01 endpoint.
+#   - cargo install clawhip: slow (>5 min) and requires network.
+#
+# So we skip the full argus_stack run and assert basic role correctness
+# only — common, hardening, argus_user. Full validation requires a real
+# Hetzner VPS dry run (tracked in the runbook).
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../requirements.yml
+
+driver:
+  name: default
+
+platforms:
+  - name: argus-vps-test
+    image: ubuntu:24.04
+    pre_build_image: false
+    privileged: true
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    capabilities:
+      - SYS_ADMIN
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callbacks_enabled: yaml
+  inventory:
+    host_vars:
+      argus-vps-test:
+        admin_ssh_pubkey: "ssh-ed25519 AAAAtest test@molecule"
+        tailscale_authkey: "tskey-auth-MOLECULE-NEVER-USED"
+        argus_user_uid: 1001
+        public_domain: "argus.test.local"
+        nginx_ssl_email: "ops@test.local"
+        nginx_run_certbot: false
+        argus_stack_start_services: false
+        ufw_ssh_source: "0.0.0.0/0"
+
+verifier:
+  name: ansible

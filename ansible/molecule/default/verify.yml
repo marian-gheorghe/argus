@@ -1,0 +1,51 @@
+---
+# Argus — molecule verify play. Asserts the small invariants that DO
+# hold inside docker without systemd --user.
+
+- hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Verify — argus user exists
+      ansible.builtin.command: id argus
+      changed_when: false
+      register: argus_id
+
+    - name: Verify — argus uid matches default
+      ansible.builtin.assert:
+        that: argus_id.stdout is search('uid=1001')
+
+    - name: Verify — UFW package present
+      ansible.builtin.command: dpkg -l ufw
+      changed_when: false
+
+    - name: Verify — fail2ban package present
+      ansible.builtin.command: dpkg -l fail2ban
+      changed_when: false
+
+    - name: Verify — sysctl drop-in is in place
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/99-argus-hardening.conf
+      register: sysctl_drop
+
+    - name: Verify — sysctl drop-in exists
+      ansible.builtin.assert:
+        that: sysctl_drop.stat.exists
+
+    - name: Verify — argus authorized_keys contains the test pubkey
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -F "ssh-ed25519 AAAAtest" /home/argus/.ssh/authorized_keys
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Verify — linger marker present
+      ansible.builtin.stat:
+        path: /var/lib/systemd/linger/argus
+      register: linger_marker
+
+    - name: Verify — linger marker file exists
+      ansible.builtin.assert:
+        that: linger_marker.stat.exists

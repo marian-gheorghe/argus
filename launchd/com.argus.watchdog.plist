@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.argus.watchdog</string>
+
+    <!--
+      ProgramArguments invokes a thin wrapper (run.sh) instead of bun directly.
+      The wrapper resolves the bun binary from BUN_BIN / $HOME/.bun/bin/bun /
+      PATH and execs the watchdog. No secrets to source — the watchdog only
+      needs paths + intervals + the ability to call launchctl, fetch, pgrep,
+      and (as the dead-man fallback) `omc emit`.
+
+      KeepAlive=true makes launchd the meta-watchdog: if the watchdog process
+      itself dies (a Bun crash, an OOM kill, etc.), launchd respawns it.
+      That's the fallback path when the in-process tick-survives-exception
+      logic isn't enough.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__WATCHDOG_DIR__/run.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__USER_PATH__</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>BUN_BIN</key>
+        <string>__BUN_BIN__</string>
+        <key>LOG_LEVEL</key>
+        <string>info</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>WATCHDOG_INTERVAL_MS</key>
+        <string>30000</string>
+        <key>WATCHDOG_THRESHOLD</key>
+        <string>2</string>
+        <key>WATCHDOG_RESTART_COOLDOWN_MS</key>
+        <string>60000</string>
+        <key>WATCHDOG_PENDING_REPLIES_OLDER_THAN_SECS</key>
+        <string>7200</string>
+        <key>BRIDGE_QUEUE_DB_PATH</key>
+        <string>__HOME__/.argus/state/bridge-queue.sqlite</string>
+        <key>OMC_STATE_DIR</key>
+        <string>__OMC_STATE_DIR__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>__WATCHDOG_DIR__</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.argus/logs/watchdog.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.argus/logs/watchdog.err.log</string>
+</dict>
+</plist>

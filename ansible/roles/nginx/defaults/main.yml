@@ -1,0 +1,11 @@
+---
+public_domain: "argus.example.com"
+nginx_ssl_email: "ops@example.com"
+
+# Upstream backends — must match the systemd unit Environment values.
+nginx_upstream_clawhip: "http://127.0.0.1:25294"
+nginx_upstream_bridge: "http://127.0.0.1:9501"
+
+# Skip the certbot run when the operator hasn't yet pointed DNS at the VPS
+# (so the HTTP-01 challenge can succeed). Set to true once DNS is propagated.
+nginx_run_certbot: true

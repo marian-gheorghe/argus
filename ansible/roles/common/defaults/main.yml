@@ -1,0 +1,18 @@
+---
+# Default variables for the `common` role.
+common_timezone: "Etc/UTC"
+common_packages:
+  - tmux
+  - git
+  - curl
+  - wget
+  - jq
+  - unzip
+  - ca-certificates
+  - gnupg
+  - rsync
+  - htop
+  - sqlite3
+  - build-essential
+  - pkg-config
+  - libssl-dev

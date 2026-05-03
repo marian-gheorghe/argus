@@ -1,0 +1,26 @@
+---
+# Argus — directory layout under the argus user's home.
+# Mirrors what scripts/install-mac.sh creates with mkdir -p.
+
+- name: Ensure argus directory tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0750"
+  become: true
+  loop:
+    - "{{ argus_argus_dir }}"
+    - "{{ argus_argus_dir }}/logs"
+    - "{{ argus_argus_dir }}/state"
+    - "{{ argus_clawhip_dir }}"
+    - "{{ argus_state_dir }}"
+    - "{{ argus_state_dir }}/argus"
+    - "{{ argus_state_dir }}/gates"
+    - "{{ argus_state_dir }}/runs"
+    - "{{ argus_user_home }}/.config"
+    - "{{ argus_user_home }}/.config/systemd"
+    - "{{ argus_systemd_user_dir }}"
+    - "{{ argus_user_home }}/.claude"
+    - "{{ argus_user_home }}/work"

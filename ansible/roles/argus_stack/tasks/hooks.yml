@@ -1,0 +1,103 @@
+---
+# Argus — register Claude Code hooks in ~argus/.claude/settings.json.
+#
+# Mirrors install-mac.sh's section_cost_tracker + section_recovery hook
+# registration: render thin bash wrappers, then use jq to idempotently insert
+# the hook entry only if no existing entry references the wrapper path.
+#
+# Idempotency: the jq filter matches by command-string contains() check, so
+# a re-run with the wrapper path unchanged is a no-op (the changed_when
+# guard returns false).
+
+# --- Wrapper scripts ----------------------------------------------------
+- name: Hooks — render cost-tracker wrapper
+  ansible.builtin.template:
+    src: cost-tracker-hook.sh.j2
+    dest: "{{ argus_argus_dir }}/cost-tracker-hook.sh"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0755"
+  become: true
+
+- name: Hooks — render recovery Stop wrapper
+  ansible.builtin.template:
+    src: recovery-stop-hook.sh.j2
+    dest: "{{ argus_argus_dir }}/recovery-stop-hook.sh"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0755"
+  become: true
+
+# --- ~argus/.claude/settings.json ---------------------------------------
+- name: Hooks — ensure ~argus/.claude/settings.json exists
+  ansible.builtin.copy:
+    dest: "{{ argus_user_home }}/.claude/settings.json"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0600"
+    content: |
+      {}
+    force: false  # don't clobber an existing settings file
+  become: true
+
+- name: Hooks — register cost-tracker PostToolUse hook (jq idempotent)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    settings="{{ argus_user_home }}/.claude/settings.json"
+    wrapper="{{ argus_argus_dir }}/cost-tracker-hook.sh"
+    if jq -e --arg w "$wrapper" \
+        '(.hooks.PostToolUse // []) | map(.hooks // []) | flatten
+         | map(.command // "") | any(contains($w))' \
+        "$settings" >/dev/null; then
+      echo "ALREADY_PRESENT"
+      exit 0
+    fi
+    tmp="$settings.tmp.$$"
+    jq --arg cmd "bash $wrapper" '
+      .hooks //= {} |
+      .hooks.PostToolUse //= [] |
+      .hooks.PostToolUse += [{
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": $cmd }]
+      }]
+    ' "$settings" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$settings"
+    echo "REGISTERED"
+  become: true
+  become_user: "{{ argus_user }}"
+  args:
+    executable: /bin/bash
+  register: cost_hook_register
+  changed_when: "'REGISTERED' in (cost_hook_register.stdout | default(''))"
+
+- name: Hooks — register recovery Stop hook (jq idempotent)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    settings="{{ argus_user_home }}/.claude/settings.json"
+    wrapper="{{ argus_argus_dir }}/recovery-stop-hook.sh"
+    if jq -e --arg w "$wrapper" \
+        '(.hooks.Stop // []) | map(.hooks // []) | flatten
+         | map(.command // "") | any(contains($w))' \
+        "$settings" >/dev/null; then
+      echo "ALREADY_PRESENT"
+      exit 0
+    fi
+    tmp="$settings.tmp.$$"
+    jq --arg cmd "bash $wrapper" '
+      .hooks //= {} |
+      .hooks.Stop //= [] |
+      .hooks.Stop += [{
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": $cmd }]
+      }]
+    ' "$settings" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$settings"
+    echo "REGISTERED"
+  become: true
+  become_user: "{{ argus_user }}"
+  args:
+    executable: /bin/bash
+  register: recovery_hook_register
+  changed_when: "'REGISTERED' in (recovery_hook_register.stdout | default(''))"

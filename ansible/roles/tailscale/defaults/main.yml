@@ -1,0 +1,5 @@
+---
+# Default variables for the `tailscale` role.
+tailscale_authkey: ""  # required from vault — no default
+tailscale_hostname: "{{ inventory_hostname }}"
+tailscale_extra_args: "--ssh"  # enable Tailscale SSH so the operator can ssh argus@<host> via tailnet identity

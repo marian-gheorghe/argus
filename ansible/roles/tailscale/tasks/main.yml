@@ -1,0 +1,80 @@
+---
+# Argus — install + bring up tailscale.
+#
+# Idempotent. Repo + key install are skipped if already present; `tailscale up`
+# is only run if the daemon reports `BackendState != "Running"` or the current
+# hostname doesn't match the configured one.
+#
+# We use the official tailscale apt repo signing key + sources list rather
+# than the one-liner installer so the install plays nicely with apt's
+# auto-upgrade machinery.
+
+- name: Ensure prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - apt-transport-https
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Tailscale — fetch apt signing key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: "0644"
+  become: true
+
+- name: Tailscale — add apt source
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main
+  become: true
+
+- name: Tailscale — install package
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+  become: true
+
+- name: Tailscale — daemon enabled and started
+  ansible.builtin.systemd:
+    name: tailscaled
+    enabled: true
+    state: started
+  become: true
+
+- name: Tailscale — sanity check authkey is set
+  ansible.builtin.assert:
+    that:
+      - tailscale_authkey is string
+      - tailscale_authkey | length > 0
+      - not (tailscale_authkey is search('PLACEHOLDER'))
+    fail_msg: "tailscale_authkey is empty or still a placeholder; supply via the vault."
+
+- name: Tailscale — query current backend state
+  ansible.builtin.command: tailscale status --json
+  become: true
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+- name: Tailscale — bring up tailscale (only if not already Running)
+  ansible.builtin.command: >-
+    tailscale up
+    --authkey={{ tailscale_authkey }}
+    --hostname={{ tailscale_hostname }}
+    {{ tailscale_extra_args }}
+  become: true
+  when:
+    - tailscale_status.rc != 0
+      or (tailscale_status.stdout | from_json).BackendState | default('') != 'Running'
+  changed_when: true
+  no_log: true

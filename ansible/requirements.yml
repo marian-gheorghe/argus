@@ -1,0 +1,16 @@
+---
+# Argus — Ansible Galaxy collection requirements.
+#
+# Install with:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# These are the minimum collections required by the playbooks/roles in this
+# directory. `community.general` provides `ufw`, `json_patch`, etc.;
+# `ansible.posix` provides `synchronize`, `firewalld`, `sysctl`. We pin to
+# major-version floors rather than exact pins so a `galaxy install -U` keeps
+# us on the supported release line.
+collections:
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"

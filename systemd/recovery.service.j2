@@ -1,0 +1,39 @@
+{{ ansible_managed | comment }}
+# Argus — recovery service. Mirrors com.argus.recovery.plist.
+# Hosts argus-recovery serve on 127.0.0.1:9601 (loopback only). Receives
+# clawhip route hooks for tmux.stale, provider.outage, and the budget routes.
+
+[Unit]
+Description=Argus recovery automation HTTP service
+After=network-online.target clawhip.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ argus_repo_dir }}/scripts/recovery
+Environment=HOME={{ argus_user_home }}
+Environment=PATH={{ argus_user_home }}/.bun/bin:{{ argus_npm_global_prefix }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BUN_BIN={{ argus_bun_bin }}
+Environment=LOG_LEVEL=info
+Environment=NODE_ENV=production
+Environment=OMC_STATE_DIR={{ argus_state_dir }}
+Environment=ARGUS_DIR={{ argus_argus_dir }}
+Environment=ARGUS_RECOVERY_PORT={{ recovery_port }}
+Environment=RALPH_MAX_ITERATIONS={{ ralph_max_iterations }}
+Environment=FAKE_COMPLETION_FRESHNESS_MS={{ fake_completion_freshness_ms }}
+Environment=PROVIDER_PAGE_AFTER_MS={{ provider_page_after_ms }}
+Environment=CRASH_BUDGET_THRESHOLD={{ crash_budget_threshold }}
+ExecStart={{ argus_bun_bin }} run {{ argus_repo_dir }}/scripts/recovery/src/cli.ts serve --port {{ recovery_port }}
+Restart=always
+RestartSec=5
+StandardOutput=append:{{ argus_argus_dir }}/logs/recovery.out.log
+StandardError=append:{{ argus_argus_dir }}/logs/recovery.err.log
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ argus_argus_dir }}/logs {{ argus_argus_dir }}/state {{ argus_state_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

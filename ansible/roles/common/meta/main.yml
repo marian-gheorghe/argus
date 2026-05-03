@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: common
+  author: argus
+  description: Baseline hygiene — packages, timezone, NTP — for all argus_vps hosts.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

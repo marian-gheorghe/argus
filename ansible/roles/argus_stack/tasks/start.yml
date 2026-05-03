@@ -1,0 +1,21 @@
+---
+# Argus — enable + start each daemon as a --user unit.
+#
+# Skipped entirely when argus_stack_start_services=false (e.g., during the
+# cutover playbook's "install only" pass before state has been rsync'd).
+#
+# enabled=true persists the unit across reboots (linger keeps user units
+# alive without a session). state=started is idempotent — already-running
+# units are a no-op.
+
+- name: systemd — enable + start each Argus service
+  ansible.builtin.systemd:
+    name: "{{ item }}.service"
+    enabled: true
+    state: started
+    scope: user
+  become: true
+  become_user: "{{ argus_user }}"
+  loop: "{{ argus_stack_services }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ argus_user_uid | default(1001) }}"

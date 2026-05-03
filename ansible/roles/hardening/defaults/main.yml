@@ -1,0 +1,20 @@
+---
+# Default variables for the `hardening` role.
+
+# UFW: SSH source CIDR (default to tailscale CGNAT).
+ufw_ssh_source: "100.64.0.0/10"
+
+# Public ingress for nginx (HTTPS + ACME).
+hardening_public_ingress_ports:
+  - 80
+  - 443
+
+# Disable root SSH login. Only set true after argus_user role has provisioned
+# admin_ssh_pubkey on the argus user — otherwise the host is locked out.
+hardening_disable_root_ssh: false
+
+# Apply the standard sysctl hardening template.
+hardening_sysctl_apply: true
+
+# unattended-upgrades scope: security tier only (no -updates).
+hardening_unattended_security_only: true

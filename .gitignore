@@ -43,3 +43,12 @@ worktrees/
 
 # Argus dev worktrees (this repo's own feature branches)
 .worktrees/
+
+# Ansible — operator-filled inventory and vaulted secrets.
+# Only the *.example files are committed.
+ansible/inventory/hosts.yml
+ansible/inventory/group_vars/argus_vps.yml
+ansible/inventory/group_vars/argus_vps.vault.yml
+ansible/collections/
+ansible/.cache/
+ansible/*.retry

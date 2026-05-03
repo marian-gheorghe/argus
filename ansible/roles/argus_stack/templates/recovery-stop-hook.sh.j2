@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+{{ ansible_managed | comment }}
+# Argus — recovery Stop hook wrapper. Mirrors scripts/install-mac.sh's
+# section_recovery wrapper. Runs ralph-cap then fake-completion in sequence;
+# both exit 0 even on internal failure so a hook crash NEVER blocks the agent.
+set -uo pipefail
+BUN_BIN="${BUN_BIN:-{{ argus_bun_bin }}}"
+RECOVERY_DIR="{{ argus_repo_dir }}/scripts/recovery"
+
+# Capture stdin so we can feed it to fake-completion (it inspects the
+# transcript for <promise>DONE</promise> claims).
+INPUT="$(cat || true)"
+
+# 1. ralph-cap: pure side-effect, no stdin needed.
+"$BUN_BIN" run "$RECOVERY_DIR/src/cli.ts" ralph-cap </dev/null || true
+
+# 2. fake-completion: needs the Stop payload.
+printf '%s' "$INPUT" | "$BUN_BIN" run "$RECOVERY_DIR/src/cli.ts" fake-completion || true
+
+exit 0

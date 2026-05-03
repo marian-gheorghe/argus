@@ -1,0 +1,19 @@
+{{ ansible_managed | comment }}
+# Argus — bootstrap nginx site. Used ONLY before certbot has issued a cert
+# for {{ public_domain }}. The full SSL site (argus.conf) replaces this once
+# /etc/letsencrypt/live/{{ public_domain }}/fullchain.pem exists.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ public_domain }};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 200 "argus-bootstrap\n";
+        add_header Content-Type text/plain;
+    }
+}

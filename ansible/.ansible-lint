@@ -1,0 +1,42 @@
+# Argus — ansible-lint configuration.
+#
+# We waive a small set of cosmetic lint rules that fight the conventions
+# already in use elsewhere in this repo:
+#
+# - name[casing]:           task names start with the lowercase service
+#                           label ("nginx —", "certbot —", "sshd —") so a
+#                           grep over `ansible-playbook` output groups
+#                           cleanly by daemon. The rule wants Title Case
+#                           on the first word, which would force "Nginx —"
+#                           and break that grep.
+# - name[play]:             our playbooks identify the play via filename
+#                           (00-bootstrap.yml, 10-stack.yml, ...) and
+#                           hosts: argus_vps; an explicit `- name:` on the
+#                           top-level play is redundant.
+# - var-naming[no-role-prefix]:
+#                           inputs like ufw_ssh_source / public_domain /
+#                           admin_ssh_pubkey are SHARED across roles
+#                           (hardening + nginx + argus_user), so prefixing
+#                           them with one role's name would mislead. We
+#                           accept the rule violation in exchange for the
+#                           shared vocabulary.
+#
+# Everything else is enforced by the default profile.
+
+skip_list:
+  - name[casing]
+  - name[play]
+  - var-naming[no-role-prefix]
+  # We use `command: rsync ...` rather than ansible.posix.synchronize
+  # because we need --rsync-path="mkdir -p ... && rsync" to bootstrap the
+  # destination dir on first run, and synchronize doesn't expose that.
+  - command-instead-of-module
+
+# Pin the profile so future ansible-lint releases don't silently start
+# enforcing rules we haven't reviewed.
+profile: basic
+
+exclude_paths:
+  - .cache/
+  - collections/
+  - .ansible/

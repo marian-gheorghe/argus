@@ -1,0 +1,45 @@
+---
+# Argus — vaulted secrets template.
+#
+# This file is the unencrypted EXAMPLE. Operator workflow:
+#
+#   1. cp group_vars/argus_vps.vault.yml.example group_vars/argus_vps.vault.yml
+#   2. Fill in real values.
+#   3. Encrypt:
+#        ansible-vault encrypt group_vars/argus_vps.vault.yml
+#   4. Run playbooks with --ask-vault-pass (or set ANSIBLE_VAULT_PASSWORD_FILE).
+#
+# Decrypt to edit:    ansible-vault edit group_vars/argus_vps.vault.yml
+# Re-key:             ansible-vault rekey group_vars/argus_vps.vault.yml
+# View:               ansible-vault view group_vars/argus_vps.vault.yml
+#
+# `argus_vps.vault.yml` (encrypted or unencrypted) is gitignored — only this
+# example is committed.
+
+# --- Telegram bridge ------------------------------------------------------
+vault_telegram_bot_token: "PLACEHOLDER"
+vault_telegram_chat_id_info: "PLACEHOLDER"
+vault_telegram_chat_id_warn: "PLACEHOLDER"
+vault_telegram_chat_id_page: "PLACEHOLDER"
+vault_telegram_chat_id_critical: "PLACEHOLDER"
+vault_telegram_chat_id_gates: "PLACEHOLDER"
+vault_telegram_webhook_secret: "PLACEHOLDER"
+
+# --- clawhip Discord webhook ----------------------------------------------
+vault_clawhip_discord_webhook: "https://discord.com/api/webhooks/PLACEHOLDER"
+
+# --- Anthropic API (only needed in API billing mode) ----------------------
+vault_anthropic_api_key: "sk-ant-PLACEHOLDER"
+# OAuth token for Claude Code Max20 mode. Optional; falls back if absent.
+vault_claude_code_oauth_token: "PLACEHOLDER"
+
+# --- Tailscale ------------------------------------------------------------
+# Use a reusable, ephemeral, pre-approved auth key for re-provisioning.
+vault_tailscale_authkey: "tskey-auth-PLACEHOLDER"
+
+# --- GitHub App PEM (clawhip's GitHub integration) ------------------------
+# Paste the entire .pem file contents (multi-line literal block).
+vault_github_app_pem: |
+  -----BEGIN RSA PRIVATE KEY-----
+  PLACEHOLDER
+  -----END RSA PRIVATE KEY-----

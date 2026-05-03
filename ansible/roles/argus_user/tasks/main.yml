@@ -1,0 +1,63 @@
+---
+# Argus — provision the `argus` service user.
+#
+# Trust model: argus is a SERVICE account. No sudo. Operators SSH in as their
+# own login (managed out of band) and use sudo for ops work. The argus user's
+# only privileges are the systemd --user units it owns.
+#
+# Idempotent. The user is only created if missing; authorized_keys uses
+# state=present (no duplicates); linger is checked before enabling.
+
+- name: Sanity check — admin_ssh_pubkey is set
+  ansible.builtin.assert:
+    that:
+      - admin_ssh_pubkey is string
+      - admin_ssh_pubkey | length > 0
+      - admin_ssh_pubkey is search('^ssh-(rsa|ed25519|ecdsa)')
+    fail_msg: |
+      argus_user role requires `admin_ssh_pubkey` in group_vars/argus_vps.yml.
+      Provide your operator pubkey (ssh-ed25519 ...). Aborting before user
+      creation to avoid locking out the host.
+
+- name: Ensure argus group exists
+  ansible.builtin.group:
+    name: "{{ argus_user }}"
+    gid: "{{ argus_user_uid }}"
+    state: present
+  become: true
+
+- name: Ensure argus user exists
+  ansible.builtin.user:
+    name: "{{ argus_user }}"
+    uid: "{{ argus_user_uid }}"
+    group: "{{ argus_user }}"
+    groups: "{{ argus_user_groups }}"
+    append: true
+    home: "{{ argus_user_home }}"
+    shell: "{{ argus_user_shell }}"
+    create_home: true
+    state: present
+  become: true
+
+- name: Argus home — owned by argus
+  ansible.builtin.file:
+    path: "{{ argus_user_home }}"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0750"
+    state: directory
+  become: true
+
+- name: Authorized keys — operator SSH pubkey
+  ansible.posix.authorized_key:
+    user: "{{ argus_user }}"
+    key: "{{ admin_ssh_pubkey }}"
+    state: present
+    exclusive: false
+  become: true
+
+- name: Enable linger so user units survive logout
+  ansible.builtin.command: loginctl enable-linger {{ argus_user }}
+  become: true
+  args:
+    creates: "/var/lib/systemd/linger/{{ argus_user }}"

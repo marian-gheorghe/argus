@@ -1,0 +1,36 @@
+---
+# Argus — bootstrap playbook. Runs as root over SSH on a fresh Ubuntu 24.04
+# Hetzner CX32 (or equivalent). Outcome: a hardened host with the argus
+# service user provisioned and tailscale up; the operator can then run
+# 10-stack.yml as ansible_user=argus over the tailnet.
+#
+# Run:
+#   ansible-playbook playbooks/00-bootstrap.yml -u root --ask-vault-pass
+#
+# Order matters: argus_user comes before hardening's PermitRootLogin no
+# (so the operator's ssh pubkey is on argus before root SSH is locked
+# down). hardening_disable_root_ssh is true here on purpose; if the SSH
+# pubkey is wrong, the user role's pre-flight assert aborts before any
+# user changes, so we never lock the host out by accident.
+
+- hosts: argus_vps
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Sanity check — are we connecting as root?
+      ansible.builtin.assert:
+        that:
+          - ansible_user == "root" or ansible_become
+        fail_msg: |
+          00-bootstrap.yml expects root (or root via become). Use
+          `-u root` for the very first run; subsequent playbooks use the
+          argus user.
+
+  roles:
+    - role: common
+    - role: argus_user
+    - role: tailscale
+    - role: hardening
+      vars:
+        hardening_disable_root_ssh: true

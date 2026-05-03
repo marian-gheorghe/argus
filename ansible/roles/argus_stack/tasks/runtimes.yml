@@ -1,0 +1,107 @@
+---
+# Argus — language runtimes (Bun, Node 20, Rust toolchain).
+#
+# All toolchains install under the argus user's home (no system-wide pollution,
+# no sudo at runtime). The official installers are run via `creates:` guards
+# so re-runs are no-ops once the binaries exist.
+
+# --- Node 20 (system-wide via NodeSource) ---------------------------------
+# Node is the only runtime that's worth installing system-wide because OMC
+# (npm install -g) needs it on PATH. We use NodeSource's apt repo for a
+# pinned major version that gets unattended-upgrades treatment.
+- name: Node — fetch NodeSource setup script signing key
+  ansible.builtin.get_url:
+    url: "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
+    dest: /usr/share/keyrings/nodesource.gpg.armored
+    mode: "0644"
+  become: true
+
+- name: Node — dearmor signing key
+  ansible.builtin.command: >
+    gpg --dearmor --batch --yes
+    --output /usr/share/keyrings/nodesource.gpg
+    /usr/share/keyrings/nodesource.gpg.armored
+  become: true
+  args:
+    creates: /usr/share/keyrings/nodesource.gpg
+
+- name: Node — add NodeSource apt source for Node 20
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nodesource.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main
+  become: true
+
+- name: Node — install nodejs (with npm)
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+  become: true
+
+# --- Bun (per-user under ~argus/.bun) -------------------------------------
+- name: Bun — install via official installer (creates ~/.bun/bin/bun)
+  ansible.builtin.shell: >
+    set -o pipefail;
+    curl -fsSL {{ argus_bun_install_url }} | bash
+  become: true
+  become_user: "{{ argus_user }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ argus_bun_bin }}"
+  environment:
+    HOME: "{{ argus_user_home }}"
+
+# --- Rust (rustup, per-user under ~argus/.cargo + ~argus/.rustup) ---------
+- name: Rust — install rustup non-interactively (creates ~/.cargo/bin/cargo)
+  ansible.builtin.shell: >
+    set -o pipefail;
+    curl --proto '=https' --tlsv1.2 -sSf {{ argus_rustup_install_url }}
+    | sh -s -- -y --default-toolchain stable --profile minimal
+  become: true
+  become_user: "{{ argus_user }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ argus_cargo_bin_dir }}/cargo"
+  environment:
+    HOME: "{{ argus_user_home }}"
+
+# --- npm prefix (no sudo for global installs) -----------------------------
+- name: npm — set per-user prefix so `npm install -g` doesn't need sudo
+  ansible.builtin.file:
+    path: "{{ argus_npm_global_prefix }}"
+    state: directory
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0755"
+  become: true
+
+- name: npm — write per-user .npmrc with prefix
+  ansible.builtin.copy:
+    dest: "{{ argus_user_home }}/.npmrc"
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+    content: |
+      prefix={{ argus_npm_global_prefix }}
+      fund=false
+      audit=false
+  become: true
+
+# --- PATH entries in the argus user's bashrc ------------------------------
+- name: Argus shell PATH — bun + cargo + npm-global
+  ansible.builtin.blockinfile:
+    path: "{{ argus_user_home }}/.bashrc"
+    create: true
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0644"
+    marker: "# {mark} ANSIBLE MANAGED — argus PATH"
+    block: |
+      export BUN_INSTALL="$HOME/.bun"
+      export PATH="$BUN_INSTALL/bin:$HOME/.cargo/bin:{{ argus_npm_global_prefix }}/bin:$PATH"
+      export OMC_STATE_DIR="{{ argus_state_dir }}"
+  become: true

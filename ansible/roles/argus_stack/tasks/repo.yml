@@ -1,0 +1,74 @@
+---
+# Argus — clone (or pull) the repo, then install per-package deps.
+#
+# Idempotent: git module pulls the latest of `argus_repo_branch` on re-run;
+# `bun install` is a no-op when bun.lock matches; `cargo install --locked
+# clawhip` skips the build if the binary is already present at the same
+# version; `npm install -g oh-my-claude-sisyphus@latest` is the only
+# unavoidable network hit on each run (npm checks the registry).
+
+- name: Repo — ensure argus repo dir exists
+  ansible.builtin.file:
+    path: "{{ argus_repo_dir }}"
+    state: directory
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0750"
+  become: true
+
+- name: Repo — clone or update
+  ansible.builtin.git:
+    repo: "{{ argus_repo_url }}"
+    dest: "{{ argus_repo_dir }}"
+    version: "{{ argus_repo_branch }}"
+    update: true
+    force: false
+  become: true
+  become_user: "{{ argus_user }}"
+
+# --- Bun project deps ----------------------------------------------------
+- name: Repo — bun install per project
+  ansible.builtin.command: "{{ argus_bun_bin }} install"
+  args:
+    chdir: "{{ argus_repo_dir }}/{{ item }}"
+  become: true
+  become_user: "{{ argus_user }}"
+  loop: "{{ argus_bun_projects }}"
+  register: bun_install_result
+  changed_when: "'+' in bun_install_result.stdout or 'installed' in (bun_install_result.stdout | lower)"
+  environment:
+    HOME: "{{ argus_user_home }}"
+    PATH: "{{ argus_user_home }}/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+
+# --- clawhip via cargo ---------------------------------------------------
+- name: "Repo — clawhip installed via cargo (creates ~/.cargo/bin/clawhip)"
+  ansible.builtin.command: "{{ argus_cargo_bin_dir }}/cargo install clawhip --locked"
+  args:
+    creates: "{{ argus_clawhip_bin }}"
+  become: true
+  become_user: "{{ argus_user }}"
+  environment:
+    HOME: "{{ argus_user_home }}"
+    PATH: "{{ argus_cargo_bin_dir }}:/usr/local/bin:/usr/bin:/bin"
+
+# --- OMC via npm (global, under per-user prefix) -------------------------
+- name: "Repo — oh-my-claude-sisyphus installed via npm (creates ~/.npm-global/bin/omc)"
+  ansible.builtin.command: "npm install -g oh-my-claude-sisyphus@latest"
+  args:
+    creates: "{{ argus_omc_bin }}"
+  become: true
+  become_user: "{{ argus_user }}"
+  environment:
+    HOME: "{{ argus_user_home }}"
+    PATH: "{{ argus_npm_global_prefix }}/bin:/usr/local/bin:/usr/bin:/bin"
+
+# --- clawhip claude-code hook bridge -------------------------------------
+- name: "Repo — clawhip plugin install claude-code (creates ~/.clawhip/hooks/native-hook.mjs)"
+  ansible.builtin.command: "{{ argus_clawhip_bin }} plugin install claude-code"
+  args:
+    creates: "{{ argus_clawhip_dir }}/hooks/native-hook.mjs"
+  become: true
+  become_user: "{{ argus_user }}"
+  environment:
+    HOME: "{{ argus_user_home }}"
+    PATH: "{{ argus_cargo_bin_dir }}:/usr/local/bin:/usr/bin:/bin"

@@ -1,0 +1,36 @@
+{{ ansible_managed | comment }}
+# Argus — Telegram bridge systemd --user unit. Mirrors com.argus.telegram-bridge.plist.
+# The bridge consumes clawhip webhooks and fans out to Telegram chats by tier.
+
+[Unit]
+Description=Argus telegram-bridge
+After=network-online.target clawhip.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ argus_repo_dir }}/scripts/telegram-bridge
+EnvironmentFile={{ argus_argus_dir }}/secrets.env
+Environment=HOME={{ argus_user_home }}
+Environment=PATH={{ argus_user_home }}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BUN_BIN={{ argus_bun_bin }}
+Environment=BRIDGE_HOST={{ bridge_host }}
+Environment=BRIDGE_PORT={{ bridge_port }}
+Environment=LOG_LEVEL=info
+Environment=NODE_ENV=production
+Environment=OMC_GATES_DIR={{ argus_state_dir }}/gates
+Environment=QUEUE_DB_PATH={{ argus_argus_dir }}/state/bridge-queue.sqlite
+ExecStart={{ argus_bun_bin }} run {{ argus_repo_dir }}/scripts/telegram-bridge/src/index.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:{{ argus_argus_dir }}/logs/telegram-bridge.out.log
+StandardError=append:{{ argus_argus_dir }}/logs/telegram-bridge.err.log
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ argus_argus_dir }}/logs {{ argus_argus_dir }}/state {{ argus_state_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
