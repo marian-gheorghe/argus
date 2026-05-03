@@ -18,6 +18,18 @@ require_brew() {
   command -v brew >/dev/null 2>&1 || fail "Homebrew not found. Install from https://brew.sh first."
 }
 
+# Fail fast if Task 6 (manual Discord webhook setup) hasn't been completed.
+# Without this, the operator burns 5+ minutes on cargo install before the
+# in-section check at section_clawhip_config errors out.
+require_secrets() {
+  local secrets="$HOME/.argus/secrets.env"
+  [[ -f "$secrets" ]] || fail "Missing $secrets — complete Task 6 (Discord webhook) first."
+  # shellcheck disable=SC1090
+  source "$secrets"
+  [[ -n "${CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO:-}" ]] || \
+    fail "CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO not set in $secrets — complete Task 6."
+}
+
 # Sections — filled in across Phase A tasks
 section_brew_packages() {
   local pkgs=(tmux node@20 cloudflared)
@@ -40,6 +52,7 @@ section_brew_packages() {
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
     # shellcheck disable=SC1091
     source "$HOME/.cargo/env"
+    command -v cargo >/dev/null 2>&1 || fail "cargo not on PATH after rustup install"
   else
     log "  cargo already on PATH ($(cargo --version))"
   fi
@@ -141,6 +154,10 @@ section_launchd() {
       "$src" > "$tmp"
     chmod 644 "$tmp"
     mv "$tmp" "$dst"
+    # Validate post-render: plutil-lint + residual-placeholder check.
+    plutil -lint "$dst" >/dev/null || fail "Rendered $dst failed plutil -lint"
+    ! grep -q '__[A-Z_]*__' "$dst" || \
+      fail "Rendered $dst still contains placeholder tokens — sed substitution failed"
   done
 
   log "  plists installed in $HOME/Library/LaunchAgents/"
@@ -150,6 +167,7 @@ section_launchd() {
 main() {
   require_macos
   require_brew
+  require_secrets
   log "Argus Phase A install starting (ARGUS_HOME=$ARGUS_HOME, OMC_STATE_DIR=$OMC_STATE_DIR)"
   section_brew_packages
   section_omc
