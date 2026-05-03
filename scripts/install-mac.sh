@@ -123,19 +123,24 @@ section_launchd() {
   clawhip_bin="$(command -v clawhip)" || fail "clawhip not on PATH"
   omc_bin="$(command -v omc)"          || fail "omc not on PATH"
 
+  # Sed delimiter '|' avoids collisions with '/' in PATH/HOME values.
+  # PATH entries containing '|' would break the substitution — exotic enough to ignore.
   for label in com.argus.clawhip com.argus.omc-wait; do
     local src="$(pwd)/launchd/$label.plist"
     local dst="$HOME/Library/LaunchAgents/$label.plist"
+    local tmp="$dst.tmp.$$"
     [[ -f "$src" ]] || fail "Missing template: $src"
     log "  rendering $label"
+    # Atomic-write: tmp + chmod + mv. rename(2) is atomic on same fs.
     sed \
       -e "s|__CLAWHIP_BIN__|$clawhip_bin|g" \
       -e "s|__OMC_BIN__|$omc_bin|g" \
       -e "s|__USER_PATH__|$PATH|g" \
       -e "s|__HOME__|$HOME|g" \
       -e "s|__OMC_STATE_DIR__|$OMC_STATE_DIR|g" \
-      "$src" > "$dst"
-    chmod 644 "$dst"
+      "$src" > "$tmp"
+    chmod 644 "$tmp"
+    mv "$tmp" "$dst"
   done
 
   log "  plists installed in $HOME/Library/LaunchAgents/"
