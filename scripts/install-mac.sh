@@ -53,6 +53,20 @@ section_omc() {
     npm install -g oh-my-claude-sisyphus@latest
   fi
   log "  omc binary at: $(command -v omc)"
+  local rc_file
+  if [[ -n "${ZSH_VERSION:-}" || "$SHELL" == */zsh ]]; then
+    rc_file="$HOME/.zshrc"
+  else
+    rc_file="$HOME/.bash_profile"
+  fi
+  local export_line='export OMC_STATE_DIR="$HOME/.claude/omc"'
+  if ! grep -qF "$export_line" "$rc_file" 2>/dev/null; then
+    log "  adding OMC_STATE_DIR export to $rc_file"
+    printf '\n# Argus — centralized OMC state for portability\n%s\n' "$export_line" >> "$rc_file"
+  else
+    log "  OMC_STATE_DIR already exported in $rc_file"
+  fi
+  mkdir -p "$OMC_STATE_DIR"
 }
 section_clawhip()       { :; }
 section_discord()       { :; }

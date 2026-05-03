@@ -45,3 +45,9 @@ Notes: <anything that surprised you>
 - omc doctor: <pass/fail summary>
 
 Notes: <any prompts that surprised you during omc setup>
+
+### 2026-05-03 HH:MM — Task 4: OMC_STATE_DIR centralized
+
+- Path: $HOME/.claude/omc
+- Shell rc updated: <which file>
+- omc doctor still green: yes/no
