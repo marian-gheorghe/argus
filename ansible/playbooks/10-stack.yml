@@ -1,0 +1,31 @@
+---
+# Argus — install the full Argus stack on a host that has already been
+# bootstrapped via 00-bootstrap.yml.
+#
+# Run (after switching ansible_user to argus in inventory/hosts.yml):
+#   ansible-playbook playbooks/10-stack.yml -u argus --ask-vault-pass
+#
+# Requires sudo for system-level steps (apt, nginx, certbot). The
+# argus_stack + nginx roles use `become: true` selectively where needed;
+# anything running as the argus user uses `become_user: argus`.
+#
+# After 10-stack succeeds you should see five healthy --user units
+# (clawhip, omc-wait, telegram-bridge, watchdog, recovery), an nginx
+# vhost on {{ public_domain }}, and a Let's Encrypt cert.
+
+- hosts: argus_vps
+  gather_facts: true
+
+  pre_tasks:
+    - name: Sanity check — connecting user has sudo for apt/nginx steps
+      ansible.builtin.command: sudo -n true
+      changed_when: false
+      become: false
+      register: sudo_probe
+      failed_when: sudo_probe.rc != 0
+      ignore_errors: true
+      tags: [always]
+
+  roles:
+    - role: argus_stack
+    - role: nginx
