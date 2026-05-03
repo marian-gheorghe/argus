@@ -96,10 +96,14 @@ section_clawhip_config() {
     log "  $cfg exists; backing up to $cfg.bak.$(date +%s)"
     cp "$cfg" "$cfg.bak.$(date +%s)"
   fi
-  # Substitute the placeholder with the real webhook URL
+  # Substitute the placeholder with the real webhook URL.
+  # Atomic-write: write to tmp, chmod, then mv (rename(2) is atomic on same fs).
+  # Prevents truncated config if disk fills / power loss during write.
+  local tmp="$cfg.tmp.$$"
   sed "s|REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO|$CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO|g" \
-    "$example" > "$cfg"
-  chmod 600 "$cfg"
+    "$example" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$cfg"
   log "  wrote $cfg ($(wc -l < "$cfg") lines)"
 }
 section_hook_bridge() {
