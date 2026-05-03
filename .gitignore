@@ -1,0 +1,42 @@
+# Local secrets / runtime
+.env
+.env.local
+*.local.toml
+*.local.json
+config/*.local.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Bun
+bun.lock
+
+# Runtime artifacts (if anything ends up running from here)
+*.log
+*.pid
+.cache/
+
+# OMC / clawhip state if anyone accidentally runs from here
+.omc/
+.clawhip/
+
+# Worktrees managed by OMC team mode
+worktrees/
