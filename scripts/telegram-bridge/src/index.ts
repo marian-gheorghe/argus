@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { type ChatIds, Dispatcher } from "./dispatcher.ts";
 import { GateWatcher } from "./gate-watcher.ts";
 import { OutboundQueue } from "./queue.ts";
-import { defaultRender } from "./render.ts";
+import { render } from "./render.ts";
 import { buildApp, makeLog } from "./server.ts";
 import { TelegramClient } from "./telegram.ts";
 
@@ -46,7 +46,7 @@ if (import.meta.main) {
   const dispatcher = new Dispatcher({
     queue,
     telegram,
-    render: defaultRender,
+    render,
     log,
     chatIds,
   });
