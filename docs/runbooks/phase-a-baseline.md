@@ -58,3 +58,9 @@ Notes: <any prompts that surprised you during omc setup>
 - Build time: <minutes> on <Apple Silicon / Intel>
 
 Notes: <any cargo warnings, openssl issues, etc.>
+
+### 2026-05-03 HH:MM — Task 7: clawhip config wired
+
+- $HOME/.clawhip/config.toml generated: yes
+- `clawhip send` test message visible in Discord: yes/no
+- Lag observed: <seconds>

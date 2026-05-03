@@ -79,7 +79,29 @@ section_clawhip() {
   log "  clawhip binary at: $(command -v clawhip)"
   log "  clawhip config dir: $HOME/.clawhip (will be populated in Task 7)"
 }
-section_discord()       { :; }
+section_clawhip_config() {
+  log "Generating clawhip config from example + secret"
+  local cfg="$HOME/.clawhip/config.toml"
+  local example="$(pwd)/config/clawhip.toml.example"
+  [[ -f "$example" ]] || fail "Missing $example — did you run this from the argus repo root?"
+  [[ -f "$HOME/.argus/secrets.env" ]] || fail "Missing $HOME/.argus/secrets.env (Task 6)"
+
+  # shellcheck disable=SC1091
+  source "$HOME/.argus/secrets.env"
+  [[ -n "${CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO:-}" ]] || \
+    fail "CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO not set in $HOME/.argus/secrets.env"
+
+  mkdir -p "$HOME/.clawhip"
+  if [[ -f "$cfg" ]]; then
+    log "  $cfg exists; backing up to $cfg.bak.$(date +%s)"
+    cp "$cfg" "$cfg.bak.$(date +%s)"
+  fi
+  # Substitute the placeholder with the real webhook URL
+  sed "s|REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO|$CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO|g" \
+    "$example" > "$cfg"
+  chmod 600 "$cfg"
+  log "  wrote $cfg ($(wc -l < "$cfg") lines)"
+}
 section_launchd()       { :; }
 
 main() {
@@ -89,7 +111,7 @@ main() {
   section_brew_packages
   section_omc
   section_clawhip
-  section_discord
+  section_clawhip_config
   section_launchd
   log "Phase A install complete."
 }
