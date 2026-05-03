@@ -115,7 +115,32 @@ section_hook_bridge() {
     clawhip plugin install claude-code
   fi
 }
-section_launchd()       { :; }
+section_launchd() {
+  log "Installing launchd plists for clawhip and omc wait"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.argus/logs"
+
+  local clawhip_bin omc_bin
+  clawhip_bin="$(command -v clawhip)" || fail "clawhip not on PATH"
+  omc_bin="$(command -v omc)"          || fail "omc not on PATH"
+
+  for label in com.argus.clawhip com.argus.omc-wait; do
+    local src="$(pwd)/launchd/$label.plist"
+    local dst="$HOME/Library/LaunchAgents/$label.plist"
+    [[ -f "$src" ]] || fail "Missing template: $src"
+    log "  rendering $label"
+    sed \
+      -e "s|__CLAWHIP_BIN__|$clawhip_bin|g" \
+      -e "s|__OMC_BIN__|$omc_bin|g" \
+      -e "s|__USER_PATH__|$PATH|g" \
+      -e "s|__HOME__|$HOME|g" \
+      -e "s|__OMC_STATE_DIR__|$OMC_STATE_DIR|g" \
+      "$src" > "$dst"
+    chmod 644 "$dst"
+  done
+
+  log "  plists installed in $HOME/Library/LaunchAgents/"
+  log "  daemons will be started in Task 10"
+}
 
 main() {
   require_macos

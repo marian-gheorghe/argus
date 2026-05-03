@@ -70,3 +70,9 @@ Notes: <any cargo warnings, openssl issues, etc.>
 - ~/.clawhip/hooks/native-hook.mjs exists: yes
 - ~/.claude/settings.json updated: yes
 - Hooks registered: <SessionStart, Stop, PostToolUse, UserPromptSubmit, etc.>
+
+### 2026-05-03 HH:MM — Task 9: launchd plists rendered
+
+- com.argus.clawhip.plist: rendered, plutil OK
+- com.argus.omc-wait.plist: rendered, plutil OK
+- Logs will land at: $HOME/.argus/logs/{clawhip,omc-wait}.{out,err}.log
