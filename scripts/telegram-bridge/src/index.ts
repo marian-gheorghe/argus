@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type ChatIds, Dispatcher } from "./dispatcher.ts";
+import { GateWatcher } from "./gate-watcher.ts";
 import { OutboundQueue } from "./queue.ts";
 import { defaultRender } from "./render.ts";
 import { buildApp, makeLog } from "./server.ts";
@@ -36,10 +37,14 @@ if (import.meta.main) {
     gates: requireChatId("TELEGRAM_CHAT_ID_GATES"),
   };
 
+  const gatesDir = process.env.OMC_GATES_DIR ?? `${process.env.HOME}/.claude/omc/gates`;
+  mkdirSync(gatesDir, { recursive: true });
+
   const server = Bun.serve({ port, hostname: host, fetch: app.fetch });
   log.info({ port: server.port, host }, "argus-telegram-bridge listening");
 
   const stopController = new AbortController();
+
   const dispatcher = new Dispatcher({
     queue,
     telegram,
@@ -49,6 +54,10 @@ if (import.meta.main) {
   });
   const dispatcherPromise = dispatcher.run(stopController.signal);
 
+  const gateWatcher = new GateWatcher({ gatesDir, queue, log });
+  await gateWatcher.start(stopController.signal);
+  log.info({ gatesDir }, "gate-watcher started");
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
@@ -56,6 +65,7 @@ if (import.meta.main) {
     log.info({ signal }, "shutting down");
     server.stop();
     stopController.abort();
+    await gateWatcher.stop();
     await dispatcherPromise;
     queue.close();
     log.info("clean exit");
