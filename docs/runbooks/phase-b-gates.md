@@ -9,7 +9,7 @@ Living log of the Phase B install on macOS. Append findings as you go.
 - [x] Tasks 6,7,8: HTTP receiver + dispatcher + gate watcher (TDD)
 - [x] Task 9 (rich gate-message renderer with markdown + inline keyboard)
 - [x] Task 10: callback handler (TDD) — atomic decision write + HMAC + reject reply flow
-- [ ] Tasks 11,12,13: Cloudflare Tunnel + bridge launchd + clawhip routes
+- [x] Tasks 11,12,13: Cloudflare Tunnel + bridge launchd + clawhip routes
 - [ ] Task 14: OMC dispatcher skill (gate state machine)
 - [ ] Tasks 15,16: 24h smoke + verdict (operator manual)
 
@@ -113,3 +113,72 @@ Commits this session:
 - `phase-b: rich gate-message renderer with markdown + inline keyboard`
 - `phase-b: telegram callback handler — atomic decision writes + HMAC + reject reply flow`
 - `phase-b: runbook entry for tasks 9-10 (gate render + callback handler)`
+
+### 2026-05-03 — Tasks 11, 12, 13: Cloudflare Tunnel + bridge launchd + clawhip routes
+
+Five small commits stitching together the deployment side of Phase B. No new business logic — pure plumbing so the operator can `bash scripts/install-mac.sh` and end up with three healthy launchd daemons (clawhip, omc-wait, telegram-bridge) plus an optional fourth (cloudflared) once the one-time tunnel handshake is done.
+
+**Task 11 (cloudflared tunnel for Telegram webhook ingress):**
+
+- New `scripts/install-cloudflared.sh` — operator runs this ONCE on each host; idempotent so re-runs are safe. Steps: `cloudflared tunnel login` (gated on absence of `~/.cloudflared/cert.pem`); `cloudflared tunnel create argus-bridge` (gated on `tunnel list | awk` match); `cloudflared tunnel route dns argus-bridge $ARGUS_TUNNEL_HOSTNAME` (Cloudflare upserts so re-runs are no-ops); render `~/.cloudflared/config.yml` via heredoc + atomic tmp→mv with chmod 600; persist `ARGUS_TUNNEL_ID` into `~/.argus/secrets.env` (grep+replace if stale, append if missing). The script ends by printing the exact `curl ... setWebhook` command the operator needs to run after `install-mac.sh` brings the bridge up.
+- New `launchd/com.argus.cloudflared.plist` template with `__CLOUDFLARED_BIN__`, `__USER_PATH__`, `__HOME__` placeholders. ProgramArguments runs `cloudflared tunnel --config $HOME/.cloudflared/config.yml run argus-bridge` — credentials come from `~/.cloudflared/<uuid>.json` written during `tunnel login`, so no token in the plist.
+- New `section_cloudflared` in `install-mac.sh`. Crucially, this section is *skip-when-not-configured*: if `cloudflared` isn't on PATH OR `~/.cloudflared/config.yml` doesn't exist, it logs and returns 0 instead of failing. That preserves the property that `install-mac.sh` is safe to re-run before the operator has done the interactive `tunnel login`. Same atomic-write + plutil-lint + placeholder-residue check as `section_launchd`.
+
+**Task 12 (telegram-bridge launchd plist):**
+
+- New `launchd/com.argus.telegram-bridge.plist` template. Five placeholders: `__BUN_BIN__`, `__BRIDGE_DIR__`, `__USER_PATH__`, `__HOME__`, `__OMC_STATE_DIR__`. The plist's `ProgramArguments` invokes a thin wrapper (`run.sh`) rather than `bun` directly so secrets don't have to be embedded in the launchd config — they live in `$HOME/.argus/secrets.env` (chmod 0600) and are sourced at process boot. The plist DOES carry the non-secret env: `BRIDGE_PORT=9501`, `BRIDGE_HOST=127.0.0.1`, `LOG_LEVEL=info`, `NODE_ENV=production`, `OMC_GATES_DIR`, `QUEUE_DB_PATH`. `KeepAlive=true` so launchd respawns the bridge on crash; `WorkingDirectory` set so relative paths inside the bridge (none currently, but defensive) resolve correctly.
+- New `scripts/telegram-bridge/run.sh` (committed `+x`). Sources `~/.argus/secrets.env`, validates that all seven required env vars are present (`TELEGRAM_BOT_TOKEN`, four `TELEGRAM_CHAT_ID_*`, `TELEGRAM_WEBHOOK_SECRET`), then `exec`s `bun run src/index.ts`. Resolves bun via `$BUN_BIN` (set by the plist) → `$HOME/.bun/bin/bun` → `command -v bun`, in that order — the precedence lets a developer override the binary via env in dev without touching the plist.
+- New `section_bridge` in `install-mac.sh`, wired into `main()` between `section_hook_bridge` and `section_launchd`. Creates `~/.argus/state` (queue's sqlite dir) and `$OMC_STATE_DIR/gates` (gate-watcher's input dir) defensively — OMC will create the latter too but redundancy is harmless. Atomic-write + plutil-lint + placeholder-residue check, same pattern as `section_launchd`.
+
+**Task 13 (clawhip routes update):**
+
+- `config/clawhip.toml.example` extended with five new routes — `gate.pending` → bridge `/webhook/gate`, `gate.timeout` → bridge `/webhook/page`, `gate.approved` → Discord `runs-info`, `agent.failed` → Discord `runs-info`, `omc.rate-limit-pause` → Discord `runs-info`. Existing `git.commit`, `agent.*`, `session.*` routes preserved verbatim. The bridge URLs are hardcoded localhost (`http://127.0.0.1:9501`) so no token substitution is needed — `section_clawhip_config`'s existing `sed s|REPLACE_WITH_...|...|` pass continues to handle just the Discord webhooks.
+
+**Wiring order in `install-mac.sh::main()`** (after this session):
+
+1. `section_brew_packages` (cloudflared installed here)
+2. `section_bun`
+3. `section_omc`
+4. `section_clawhip`
+5. `section_clawhip_config`
+6. `section_hook_bridge`
+7. `section_bridge` (NEW — launchd plist for the bridge)
+8. `section_launchd` (existing — clawhip + omc-wait)
+9. `section_cloudflared` (NEW — last, because cloudflared depends on the bridge being installed so when it starts it has a backend to forward to)
+
+**Tradeoffs / design choices:**
+
+- **Wrapper script over launchd-embedded secrets:** the launchd plist sits at `$HOME/Library/LaunchAgents/com.argus.telegram-bridge.plist` (mode 0644 by convention). Embedding the bot token there would expose it to anything in the user session. The wrapper hops through a chmod-0600 dotfile so the secret distribution remains a single file even though the daemon system reads from the world-readable plist.
+- **`section_cloudflared` skip-when-not-configured:** the alternative was to fail the install if the operator hadn't run `install-cloudflared.sh` yet. Rejected — `install-mac.sh` is meant to be re-runnable in any state, and `cloudflared tunnel login` requires interactive browser auth which we can't automate. Skipping with a clear log message is the right move; the operator runs `install-mac.sh` again after `install-cloudflared.sh` and the section picks up.
+- **Tunnel ID persisted into `secrets.env`:** strictly speaking the launchd plist doesn't need it (we use `cloudflared tunnel ... run argus-bridge` by name, which `cloudflared` resolves via local credentials). But persisting it gives operator-readable evidence that setup completed and gives Phase C/D tooling (e.g. a tunnel-health probe) a stable reference point.
+- **`gate.timeout` → `/webhook/page`, not `/webhook/critical`:** a timeout is a paged human decision, not a system-down emergency. Reserving CRITICAL for things that imply harness loss aligns with the design's tier semantics. Phase C may revisit if operators report missing the buzzer when a gate ages out at 03:00.
+- **`gate.approved` to Discord, not Telegram:** the operator already saw the approval (they tapped the button); a second Telegram echo would be noise. Discord's `runs-info` is the audit trail.
+
+**Verification:**
+
+- `bash -n scripts/install-mac.sh` → exit 0.
+- `bash -n scripts/install-cloudflared.sh` → exit 0.
+- `bash -n scripts/telegram-bridge/run.sh` → exit 0.
+- `plutil -lint launchd/com.argus.cloudflared.plist` → OK.
+- `plutil -lint launchd/com.argus.telegram-bridge.plist` → OK.
+- `bun test` (from `scripts/telegram-bridge/`) → `129 pass / 0 fail / 292 expect() calls` (unchanged from Task 10).
+
+**Operator next-steps (deferred to Tasks 15-16):**
+
+1. Run `ARGUS_TUNNEL_HOSTNAME=argus-bridge.<your-domain> bash scripts/install-cloudflared.sh` once.
+2. Re-run `bash scripts/install-mac.sh` (now `section_cloudflared` will pick up the config).
+3. `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.argus.{telegram-bridge,cloudflared}.plist` to start the daemons.
+4. Register the Telegram webhook with the `curl ... setWebhook` command printed at the end of `install-cloudflared.sh`.
+5. Smoke-test by writing a fake `*.pending.json` into `$OMC_STATE_DIR/gates/` and confirming a Telegram message arrives.
+
+**Open concerns flagged for Phase C:**
+
+- The `cloudflared tunnel list` parser uses `awk '$2==name'` — Cloudflare's CLI output format is undocumented and could change. A future hardening pass should switch to `--output json` if the binary supports it.
+- `section_cloudflared` doesn't `launchctl bootstrap` the plist (matches `section_launchd`'s pattern). The operator does this manually post-install. Phase D may automate via `launchctl bootstrap` with a `print` probe to check first.
+
+Commits this session (5 total):
+- `phase-b: install-cloudflared.sh helper for one-time tunnel setup`
+- `phase-b: cloudflared launchd plist + section_cloudflared (skip-when-not-configured)`
+- `phase-b: telegram-bridge launchd plist + run.sh wrapper + section_bridge`
+- `phase-b: clawhip routes for gate.* and warn-tier events`
+- `phase-b: runbook entry for tasks 11-13`
