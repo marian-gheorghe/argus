@@ -1,8 +1,29 @@
-import { describe, expect, test } from "bun:test";
-import { app } from "../src/index.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import pino from "pino";
+import { OutboundQueue } from "../src/queue.ts";
+import { buildApp } from "../src/server.ts";
+
+const silentLog = pino({ level: "silent" });
+
+let tmpDir: string;
+let queue: OutboundQueue;
+
+beforeEach(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), "argus-health-"));
+  queue = new OutboundQueue(join(tmpDir, "queue.sqlite"));
+});
+
+afterEach(() => {
+  queue.close();
+  rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe("/health endpoint", () => {
   test("returns ok status", async () => {
+    const app = buildApp({ queue, log: silentLog });
     const res = await app.request("/health");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

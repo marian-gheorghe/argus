@@ -1,27 +1,18 @@
-import { Hono } from "hono";
-import pino from "pino";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { OutboundQueue } from "./queue.ts";
+import { buildApp, makeLog } from "./server.ts";
 
-const log = pino({
-  name: "argus-telegram-bridge",
-  level: process.env.LOG_LEVEL ?? "info",
-  transport:
-    process.env.NODE_ENV === "production"
-      ? undefined
-      : { target: "pino-pretty", options: { colorize: true } },
-});
+const log = makeLog();
 
-const app = new Hono();
+const queueDbPath =
+  process.env.QUEUE_DB_PATH ?? `${process.env.HOME}/.argus/state/bridge-queue.sqlite`;
+mkdirSync(dirname(queueDbPath), { recursive: true });
+const queue = new OutboundQueue(queueDbPath);
 
-app.get("/health", (c) =>
-  c.json({
-    status: "ok",
-    name: "argus-telegram-bridge",
-    version: "0.1.0",
-    uptime_secs: Math.round(process.uptime()),
-  }),
-);
+const app = buildApp({ queue, log });
 
-export { app, log };
+export { app, log, queue };
 
 if (import.meta.main) {
   const port = Number(process.env.BRIDGE_PORT ?? 9501);
@@ -29,10 +20,11 @@ if (import.meta.main) {
   const server = Bun.serve({ port, hostname: host, fetch: app.fetch });
   log.info({ port: server.port, host }, "argus-telegram-bridge listening");
 
-  // Graceful shutdown — drain wired in later tasks.
+  // Tasks 7-9 will wire dispatcher + gate-watcher into shutdown here.
   const shutdown = (signal: string) => {
     log.info({ signal }, "shutting down");
     server.stop();
+    queue.close();
     process.exit(0);
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
