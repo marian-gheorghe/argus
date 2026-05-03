@@ -57,6 +57,22 @@ section_brew_packages() {
     log "  cargo already on PATH ($(cargo --version))"
   fi
 }
+section_bun() {
+  log "Ensuring Bun is installed"
+  if command -v bun >/dev/null 2>&1; then
+    log "  bun already on PATH ($(bun --version))"
+    return
+  fi
+  log "  installing bun via official installer"
+  curl -fsSL https://bun.sh/install | bash
+  # The installer puts bun in $HOME/.bun/bin and modifies shell rc.
+  # Source it now so the rest of this script can see it.
+  # shellcheck disable=SC1091
+  [[ -s "$HOME/.bun/_bun" ]] && source "$HOME/.bun/_bun"
+  export PATH="$HOME/.bun/bin:$PATH"
+  command -v bun >/dev/null 2>&1 || fail "bun install completed but binary not on PATH"
+  log "  bun installed: $(bun --version)"
+}
 section_omc() {
   log "Ensuring OMC (oh-my-claude-sisyphus) is installed"
   if command -v omc >/dev/null 2>&1; then
@@ -170,6 +186,7 @@ main() {
   require_secrets
   log "Argus Phase A install starting (ARGUS_HOME=$ARGUS_HOME, OMC_STATE_DIR=$OMC_STATE_DIR)"
   section_brew_packages
+  section_bun
   section_omc
   section_clawhip
   section_clawhip_config
