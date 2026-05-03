@@ -1,5 +1,49 @@
 ---
-# Stub — populated in the secrets+config commit.
-- name: Config — stub
-  ansible.builtin.debug:
-    msg: "argus_stack/tasks/config.yml is a stub; populated in the secrets+config commit"
+# Argus — render the live config files from the repo's *.toml.example.
+#
+# Mirrors scripts/install-mac.sh's section_clawhip_config + section_cost_tracker
+# config rendering: replaces the literal REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO
+# placeholder in clawhip.toml with the vault value, atomic-writes mode 0600.
+# policy.toml + pricing.toml are copied verbatim (no secrets in either).
+
+# --- clawhip config ------------------------------------------------------
+- name: Config — render ~argus/.clawhip/config.toml (mode 0600)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    src="{{ argus_repo_dir }}/config/clawhip.toml.example"
+    dst="{{ argus_clawhip_dir }}/config.toml"
+    tmp="$dst.tmp.$$"
+    sed "s|REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO|{{ vault_clawhip_discord_webhook }}|g" \
+      "$src" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$dst"
+  become: true
+  become_user: "{{ argus_user }}"
+  args:
+    executable: /bin/bash
+  register: clawhip_render
+  changed_when: true
+  no_log: true
+
+# --- policy.toml + pricing.toml -----------------------------------------
+- name: Config — copy policy.toml example -> ~argus/.claude/omc/argus/policy.toml
+  ansible.builtin.copy:
+    src: "{{ argus_repo_dir }}/config/policy.toml.example"
+    dest: "{{ argus_state_dir }}/argus/policy.toml"
+    remote_src: true
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0600"
+    force: false  # don't clobber operator edits
+  become: true
+
+- name: Config — copy pricing.toml example -> ~argus/.argus/pricing.toml
+  ansible.builtin.copy:
+    src: "{{ argus_repo_dir }}/config/pricing.toml.example"
+    dest: "{{ argus_argus_dir }}/pricing.toml"
+    remote_src: true
+    owner: "{{ argus_user }}"
+    group: "{{ argus_user }}"
+    mode: "0600"
+    force: false
+  become: true
