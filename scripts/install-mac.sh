@@ -180,6 +180,50 @@ section_launchd() {
   log "  daemons will be started in Task 10"
 }
 
+# Phase B / Task 11 — render cloudflared launchd plist iff the operator has
+# already run scripts/install-cloudflared.sh (which writes ~/.cloudflared/config.yml
+# and creates the named tunnel). Skip-without-failing when not yet configured —
+# install-mac.sh is meant to be re-runnable before AND after the one-time tunnel
+# setup, so we shouldn't error out the whole install just because the operator
+# hasn't done the interactive `cloudflared tunnel login` yet.
+section_cloudflared() {
+  log "Installing launchd plist for cloudflared (Telegram webhook ingress)"
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    warn "  cloudflared not on PATH — section_brew_packages should have installed it; skipping plist install"
+    return 0
+  fi
+  if [[ ! -f "$HOME/.cloudflared/config.yml" ]]; then
+    log "  cloudflared tunnel not configured — run scripts/install-cloudflared.sh first; skipping plist install"
+    return 0
+  fi
+
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.argus/logs"
+  local cloudflared_bin
+  cloudflared_bin="$(command -v cloudflared)"
+
+  local label="com.argus.cloudflared"
+  local src="$(pwd)/launchd/$label.plist"
+  local dst="$HOME/Library/LaunchAgents/$label.plist"
+  local tmp="$dst.tmp.$$"
+  [[ -f "$src" ]] || fail "Missing template: $src"
+  log "  rendering $label"
+  # Atomic-write: tmp + chmod + mv. rename(2) is atomic on same fs.
+  sed \
+    -e "s|__CLOUDFLARED_BIN__|$cloudflared_bin|g" \
+    -e "s|__USER_PATH__|$PATH|g" \
+    -e "s|__HOME__|$HOME|g" \
+    "$src" > "$tmp"
+  chmod 644 "$tmp"
+  mv "$tmp" "$dst"
+  # Validate post-render: plutil-lint + residual-placeholder check.
+  plutil -lint "$dst" >/dev/null || fail "Rendered $dst failed plutil -lint"
+  ! grep -q '__[A-Z_]*__' "$dst" || \
+    fail "Rendered $dst still contains placeholder tokens — sed substitution failed"
+
+  log "  plist installed at $dst"
+  log "  cloudflared will start at next launchctl load (or reboot)"
+}
+
 main() {
   require_macos
   require_brew
@@ -192,6 +236,7 @@ main() {
   section_clawhip_config
   section_hook_bridge
   section_launchd
+  section_cloudflared
   log "Phase A install complete."
 }
 
