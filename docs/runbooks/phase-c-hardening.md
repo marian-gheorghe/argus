@@ -38,9 +38,9 @@ findings as you go; do NOT delete history. Future-you (and the chaos suite +
 - [x] Task 4.4: nginx + Let's Encrypt
 
 ### Block 5 — Knowledge Accumulation Discipline
-- [ ] Task 5.1: /learner per-phase trigger
-- [ ] Task 5.2: Skill-scope classifier + collision check
-- [ ] Task 5.3: Notepad 500-line cap + summarizer
+- [x] Task 5.1: /learner per-phase trigger
+- [x] Task 5.2: Skill-scope classifier + collision check
+- [x] Task 5.3: Notepad 500-line cap + summarizer
 
 ### Block 6 — Smoke + Verdict
 - [ ] Task 6.1: First small migration run on a test repo
@@ -795,3 +795,160 @@ ansible-playbook playbooks/99-verify.yml -u argus --ask-vault-pass
   change in the GitHub App settings UI. Keep on the operator checklist.
 - **Telegram webhook URL update on cutover** likewise — set the bot's
   webhook to `https://<public_domain>/telegram` after start_target.
+
+### 2026-05-03 — Block 5: Knowledge accumulation discipline (Tasks 5.1, 5.2, 5.3)
+
+Implemented across eight commits on `phase-c/hardening`:
+
+1. `phase-c: bootstrap knowledge Bun project + manifest store (duplicated from recovery)`
+2. `phase-c: learner cadence Stop hook (sets next_prompt_prepend = /learner at phase boundary)`
+3. `phase-c: classify-scope + collision-check pure functions with tests`
+4. `phase-c: learner-postprocess orchestrator (route to scope dir + collision flag)`
+5. `phase-c: notepad-summarizer + 500-line-cap hook with archive`
+6. `phase-c: argus-knowledge CLI + main entry`
+7. `phase-c: section_knowledge install + Stop/PostToolUse hook registration + clawhip routes`
+8. `phase-c: Block 5 runbook entry` (this commit)
+
+#### Architecture decisions
+
+- **Three small modules under one CLI** (`scripts/knowledge/`,
+  Bun TS, mirroring `scripts/recovery/`): `learner-cadence` (Stop
+  hook), `learner-postprocess` (operator-invoked orchestrator),
+  `notepad-cap` (PostToolUse hook). Single binary
+  `argus-knowledge` dispatches.
+
+- **Schema duplication**: `scripts/knowledge/src/manifest.ts` is a
+  slim duplicate of `scripts/recovery/src/manifest.ts`. Both files
+  carry an explicit DUPLICATION TODO referencing a future shared
+  `argus-state` package (workspace dep). For Phase C, both modules
+  ship the same `RunManifest` shape with `passthrough()` + the new
+  `phase_boundary_seen_at` field. Round-tripping is tested. **Phase
+  C+ cleanup task**: extract the schema and store into a shared
+  package. Until then, **any field added to one MUST be added to
+  the other** so manifests do not silently drop fields owned by the
+  unmodified module.
+
+- **classify-scope heuristics** (single-evidence pulls to project):
+  - absolute paths starting `/Users/`, `/home/`, `/var/`, `/opt/`
+  - scoped npm imports (excluding well-known public scopes
+    `@types/`, `@biomejs/`, `@anthropic-ai/`, `@bun/`, etc.)
+  - git remote URLs (`git@github.com:...`, `https://github.com/...`)
+  - `run-...` ids
+  - argus-/omc/clawhip binary names
+  - `OMC_*` / `ARGUS_*` / `CLAWHIP_*` env vars
+  - default for empty content: `project` (safer fallback prevents
+    accidental leakage to the user-global skill set)
+  - `reasons[]` documents which signals fired
+
+- **Collision-check similarity**: max of three metrics, each robust
+  to a different kind of near-duplication:
+  1. char-level Levenshtein-normalised (catches "handle auth
+     error" / "handle auth errors")
+  2. token-stem Jaccard with 0.5 floor (catches "auth handling" /
+     "handle auth")
+  3. sorted-stem Levenshtein backstop (catches longer reorderings
+     with extra words)
+
+  Threshold `> 0.7`. Stemming strips trailing `-s`, `-es`, `-ing`,
+  `-ed`, `-er` for tokens longer than three chars. We deliberately
+  did not pull a Porter stemmer — the cheap suffix-strip handles the
+  common /learner re-extraction failure mode (same idea, different
+  phrasing) and adds zero deps.
+
+- **Summarizer injection**: `notepad-summarizer.ts` takes a
+  `summarize: (input: string) => Promise<string>` callback so tests
+  never touch a network. The default production summarizer in
+  `cli.ts` shells out to `claude --model haiku --no-stream` via
+  `Bun.spawn`. If `claude` is unavailable, the cap hook catches
+  the error, leaves the notepad untouched, and logs to stderr.
+
+- **Idempotency gate** for the cap hook: the summarizer's output
+  always begins with a deterministic `<!-- argus-notepad-summary
+  generated=... -->` marker. The cap hook checks the first 1KB of
+  any over-cap notepad for the marker before re-summarizing. So a
+  notepad whose summary itself happens to exceed the line cap is
+  not re-summarized into oblivion.
+
+- **learner-postprocess invocation**: Phase C ships this as
+  operator-invoked (`argus-knowledge learner-postprocess
+  /path/to/new-skill.md`). Auto-wiring (file-watcher on the skills
+  dir, or extending OMC's `/learner` skill itself to call into
+  `argus-knowledge`) is a Phase D enhancement. The CLI surfaces
+  failures (exit 1) since it's operator-driven; the two hook
+  subcommands are crash-resistant (exit 0).
+
+#### Files added/modified
+
+```
+scripts/knowledge/
+├── package.json
+├── tsconfig.json
+├── biome.json
+├── .gitignore
+├── README.md
+├── bun.lock
+├── run.sh
+├── src/
+│   ├── cli.ts
+│   ├── classify-scope.ts
+│   ├── collision-check.ts
+│   ├── emit.ts
+│   ├── learner-cadence.ts
+│   ├── learner-postprocess.ts
+│   ├── manifest.ts
+│   ├── notepad-cap-hook.ts
+│   └── notepad-summarizer.ts
+└── tests/
+    ├── classify-scope.test.ts
+    ├── cli.test.ts
+    ├── collision-check.test.ts
+    ├── learner-cadence.test.ts
+    ├── learner-postprocess.test.ts
+    ├── manifest.test.ts
+    ├── notepad-cap-hook.test.ts
+    └── notepad-summarizer.test.ts
+
+config/clawhip.toml.example  (+2 routes)
+docs/runbooks/phase-c-hardening.md  (this entry)
+scripts/install-mac.sh  (+section_knowledge, +call in main)
+scripts/recovery/src/manifest.ts  (DUPLICATION TODO header,
+                                   phase_boundary_seen_at field)
+```
+
+#### Verification
+
+- `bun test` (knowledge) → 90 tests, 195 expect() calls, all green.
+- `bun run typecheck` (knowledge) → clean.
+- `bun run lint` (knowledge) → clean.
+- `bun test` (recovery) → still 68 tests green (manifest schema
+  addition is round-trip compatible).
+- `bash -n scripts/install-mac.sh` → syntax OK.
+
+#### Hook registration
+
+Both hooks land in `~/.claude/settings.json`:
+
+- **Stop**: `bash ~/.argus/knowledge-stop-hook.sh` (calls
+  `argus-knowledge learner-cadence`).
+- **PostToolUse**: `bash ~/.argus/knowledge-posttool-hook.sh`
+  (calls `argus-knowledge notepad-cap`).
+
+Both wrappers `set -uo pipefail` (note: NOT `-e`) and trail `|| true`
+on the bun call + always `exit 0`. A failed knowledge module never
+blocks the agent.
+
+#### Known limitations / deferred items
+
+- **Schema duplication** (see above) — flagged in code (both
+  manifest.ts header docstrings) and in this runbook. Cleanup is a
+  Phase C+ extraction task.
+- **learner-postprocess auto-trigger** — Phase D. Currently
+  operator-invoked.
+- **No live `claude --model haiku` smoke** — the default summarizer
+  shells out to `claude` but tests use the injected stub. First
+  real summary will happen on the first over-cap run during Block 6
+  smoke testing.
+- **classify-scope is heuristic, not learned** — `reasons[]` is the
+  audit trail. If the operator sees a misclassification, they can
+  manually move the SKILL.md and add a project-specific anchor (or
+  remove an accidental one) to the body.
