@@ -32,10 +32,10 @@ findings as you go; do NOT delete history. Future-you (and the chaos suite +
 - [x] Task 3.5: Recovery integration smoke (chaos suite)
 
 ### Block 4 — VPS Provisioning (Ansible)
-- [ ] Task 4.1: Ansible inventory + host bootstrap role
-- [ ] Task 4.2: argus_stack role
-- [ ] Task 4.3: cutover playbook
-- [ ] Task 4.4: nginx + Let's Encrypt
+- [x] Task 4.1: Ansible inventory + host bootstrap role
+- [x] Task 4.2: argus_stack role
+- [x] Task 4.3: cutover playbook
+- [x] Task 4.4: nginx + Let's Encrypt
 
 ### Block 5 — Knowledge Accumulation Discipline
 - [ ] Task 5.1: /learner per-phase trigger
@@ -612,3 +612,186 @@ verified.
   changes, recovery's discovery breaks silently (uses stale
   checkpoint). Phase C+ idea: read a `latest` symlink that OMC
   maintains.
+
+### 2026-05-03 — Block 4: VPS Provisioning (Tasks 4.1, 4.2, 4.3, 4.4)
+
+Implemented across sixteen commits on `phase-c/hardening`:
+
+1. `phase-c: ansible scaffolding (cfg, inventory, vault example, README)`
+2. `phase-c: ansible roles common + hardening (UFW, fail2ban, sysctl, unattended-upgrades)`
+3. `phase-c: ansible roles argus_user + tailscale`
+4. `phase-c: ansible role argus_stack — runtimes (Bun, Node, Rust)`
+5. `phase-c: ansible role argus_stack — repo + bun install + cargo install + npm`
+6. `phase-c: ansible role argus_stack — secrets + config rendering`
+7. `phase-c: systemd unit templates for all 5 daemons`
+8. `phase-c: ansible role argus_stack — systemd unit deployment + service start`
+9. `phase-c: ansible role argus_stack — Claude Code hooks registration`
+10. `phase-c: ansible role nginx + Lets Encrypt certbot`
+11. `phase-c: ansible playbook 00-bootstrap (root-as)`
+12. `phase-c: ansible playbook 10-stack (argus-as)`
+13. `phase-c: ansible playbook 99-verify (health assertions)`
+14. `phase-c: ansible playbook 20-cutover (Mac -> VPS rsync + start)`
+15. `phase-c: ansible molecule scenario (best-effort smoke)`
+16. `phase-c: Block 4 runbook entry + ansible-lint config` (this commit)
+
+#### What landed
+
+- `ansible/` directory tree at the repo root: `ansible.cfg`,
+  `requirements.yml` (community.general + ansible.posix), inventory
+  examples, group_vars examples (one non-secret + one ansible-vault
+  template), `.ansible-lint` profile config, README, eight roles, four
+  playbooks, a molecule scenario.
+- `systemd/` directory now populated with five `.service.j2` templates
+  mirroring the launchd plists: `clawhip`, `omc-wait`,
+  `telegram-bridge`, `watchdog` (Type=notify + WatchdogSec=60 +
+  Restart=on-watchdog so the sd_notify path that the Bun runner
+  already calls actually means something on Linux), and `recovery`.
+  Each unit ships with `NoNewPrivileges`, `ProtectSystem=strict`,
+  `ProtectHome=read-only`, `ReadWritePaths` whitelisting only the
+  needed dirs, and `PrivateTmp`.
+- `.gitignore` extended so only the `*.example` inventory + vault
+  files are ever committed; filled `hosts.yml`, `argus_vps.yml`,
+  `argus_vps.vault.yml` are excluded.
+
+#### Key design decisions
+
+- **Vault workflow**: example file → operator copies → fills →
+  `ansible-vault encrypt`. The `secrets.yml` task asserts vault values
+  are non-PLACEHOLDER before any rendering, so an unencrypted-still-
+  default vault aborts the play with a clear message rather than
+  rendering placeholder secrets into a live `secrets.env`.
+- **User systemd units (not system)**: matches the design's "no
+  services run as root" rule and matches the Mac launchd model where
+  every daemon runs as the operator. `loginctl enable-linger argus`
+  in the `argus_user` role keeps user units alive across logout. The
+  trade-off — `XDG_RUNTIME_DIR` has to be set explicitly in the
+  `become_user: argus` environment for `systemctl --user` to work
+  outside an interactive session — is documented in the relevant tasks.
+- **Cutover idempotency** comes from three primitives: rsync
+  `--delete-after` (state converges, deletions of source files
+  propagate after a successful transfer), `launchctl bootout` ignored
+  on "No such process" (re-stop is a no-op), and `systemd state:
+  started` (already-running unit is a no-op). Phasing via
+  `argus_cutover_phase` lets the operator pause between phases for
+  spot checks; `phase=all` runs the whole sequence.
+- **Trust model**: argus is a service user with **no sudo**. Operators
+  use their own login (managed out of band) for sudo work. The README
+  documents this; if Phase D needs ops automation, add a separate
+  `operator_users` role rather than promoting argus.
+- **`creates:` guards everywhere** for slow / network-dependent
+  installers: `~/.bun/bin/bun`, `~/.cargo/bin/cargo`, `clawhip` binary,
+  `omc` binary, `clawhip plugin install claude-code` artifact. Re-runs
+  short-circuit on the first re-evaluation.
+- **nginx two-phase issuance**: the role drops in a port-80-only
+  bootstrap site before certbot runs, then swaps to the full TLS site
+  config (`argus.conf.j2`) once the cert exists. Avoids the classic
+  certbot-needs-cert-needs-certbot deadlock. `nginx -t` validates
+  every render before reload.
+- **Lint hygiene**: `.ansible-lint` waives three cosmetic rules
+  (`name[casing]`, `name[play]`, `var-naming[no-role-prefix]`) plus
+  `command-instead-of-module` for the `rsync --rsync-path=...` and
+  `systemctl is-active` probes that the dedicated modules don't
+  cover. Each waiver carries an inline comment explaining why; the
+  `basic` profile still passes (`production` per current lint
+  output — over-achieving).
+
+#### Verification
+
+- `ansible-playbook --syntax-check` clean for all four playbooks
+  (`00-bootstrap.yml`, `10-stack.yml`, `20-cutover.yml`,
+  `99-verify.yml`) plus `molecule/default/converge.yml` +
+  `molecule/default/verify.yml`.
+- `ansible-lint --nocolor playbooks/ roles/` →
+  `Passed: 0 failure(s), 0 warning(s) in 42 files processed of 44
+  encountered. Profile 'basic' was required, but 'production' profile
+  passed.`
+- File counts:
+  - playbooks: 4 (`00-bootstrap.yml`, `10-stack.yml`,
+    `20-cutover.yml`, `99-verify.yml`)
+  - roles: 6 (`common`, `hardening`, `argus_user`, `tailscale`,
+    `argus_stack`, `nginx`)
+  - role tasks files: 14 across the six roles (argus_stack alone has
+    8 sub-task files: `main`, `directories`, `runtimes`, `repo`,
+    `secrets`, `config`, `services`, `hooks`, `start`)
+  - jinja2 templates: 12 (5 systemd unit templates in `systemd/`,
+    plus 2 hardening templates, 2 nginx site templates, 1 secrets.env
+    template, 2 hook wrapper templates)
+  - molecule: 3 yamls in `molecule/default/`
+
+#### Galaxy collections required
+
+```yaml
+collections:
+  - community.general (>=8.0.0)   # ufw, timezone, json filters
+  - ansible.posix    (>=1.5.0)    # authorized_key, synchronize, sysctl
+```
+
+`ansible-galaxy collection install -r requirements.yml`.
+
+#### Operator pre-flight checklist
+
+Before running the playbooks against a real Hetzner CX32:
+
+1. **Provision the VPS via Hetzner Cloud Console.** Ubuntu 24.04, CX32,
+   SSH key delivered via cloud-init.
+2. **DNS A record** for `public_domain` -> the new public IPv4. Wait for
+   propagation (5-30 min); certbot's HTTP-01 challenge fails otherwise.
+3. **Tailscale auth key** generated in the Tailscale admin console
+   (reusable, ephemeral, pre-approved).
+4. **Telegram bot token + chat IDs** from Phase B's setup (or fresh
+   pair if rebuilding).
+5. **Discord webhook URL** for clawhip's `runs-info` channel.
+6. **GitHub App PEM** committed to the vault (only required if clawhip's
+   GitHub integration is being used; otherwise skip the line and the
+   role conditionals will pass over it).
+7. **Operator's SSH pubkey** in `inventory/group_vars/argus_vps.yml`.
+8. **`ansible-vault encrypt inventory/group_vars/argus_vps.vault.yml`**
+   so the secrets are encrypted at rest.
+
+Then:
+
+```bash
+cd ansible
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook playbooks/00-bootstrap.yml -u root --ask-vault-pass
+# Switch ansible_user to argus in inventory/hosts.yml
+ansible-playbook playbooks/10-stack.yml -u argus --ask-vault-pass
+ansible-playbook playbooks/99-verify.yml -u argus --ask-vault-pass
+```
+
+#### Known limitations
+
+- **molecule is partial**. docker-in-docker can't reliably run
+  `systemctl --user`, tailscale needs `/dev/net/tun`, certbot needs an
+  external HTTP-01 endpoint, and `cargo install clawhip` is too slow to
+  repeat per-CI-run. So the molecule scenario asserts only the
+  docker-safe subset (`common`, `argus_user`, `hardening`). Full stack
+  validation requires a real Hetzner VPS dry run — tracked as a Block 6
+  follow-up.
+- **`tailscale up` is a single-shot decision.** If the authkey expires
+  or the operator wants to re-key, the current task only re-runs when
+  `tailscale status --json`'s `BackendState != "Running"`. Re-keying
+  needs a manual `sudo tailscale logout` first; document at run-time.
+- **First run from Hetzner cloud panel**: cloud-init must deliver the
+  operator's SSH pubkey at provision time. There's no playbook flow to
+  handle "no SSH access yet" — the first connection has to land via
+  the Hetzner-provisioned key.
+- **No cloudflared on Linux.** Per design §10.2, the Hetzner plan uses
+  direct public IP + nginx + Let's Encrypt for ingress; cloudflared is
+  Mac-only (Phase B's intermediate). The launchd `com.argus.cloudflared.plist`
+  is therefore unmapped on the VPS — that's by design.
+- **Live VPS dry run pending**: Per the plan, this should be exercised
+  against a real CX32 (provision → run → destroy). Block 6 (smoke /
+  72h dry-run) is the natural place to do that. Until then, the
+  playbooks are syntax-clean + lint-clean but unverified end-to-end.
+
+#### Deferred / open items
+
+- **Live cutover dry run** (Mac → VPS → revert) per Task 4.3 step 2. The
+  playbook's idempotency + reversibility are designed in; verification
+  needs an actual Mac + VPS pair. Track in Block 6's smoke phase.
+- **GitHub webhook URL update on cutover** is documented in the design
+  but not automated by the playbook — deliberate, since it's a one-shot
+  change in the GitHub App settings UI. Keep on the operator checklist.
+- **Telegram webhook URL update on cutover** likewise — set the bot's
+  webhook to `https://<public_domain>/telegram` after start_target.
