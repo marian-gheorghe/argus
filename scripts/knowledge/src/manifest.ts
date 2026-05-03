@@ -1,14 +1,17 @@
 /**
- * Per-run manifest store for Argus recovery module.
+ * Per-run manifest store for Argus knowledge module.
  *
- * **DUPLICATION TODO (Phase C+):**  This file has a slim duplicate at
- * `scripts/knowledge/src/manifest.ts`. Both modules read/write the same
- * `manifest.json`. We ship them side-by-side in Phase C; the cleanup
- * task is to extract the schema + store into a shared `argus-state`
- * package (workspace dep). Until then: keep both files in sync — any
- * field added here MUST be added to knowledge's manifest.ts too (and
- * vice versa) so that round-tripping a manifest written by one module
- * does not silently drop fields owned by the other.
+ * **DUPLICATION TODO (Phase C+):**  This file is a slim duplicate of
+ * `scripts/recovery/src/manifest.ts`. Both modules need atomic JSON
+ * read/write + sidecar-lock semantics for the same `manifest.json`
+ * file. We ship them side-by-side in Phase C; the cleanup task is to
+ * extract the schema + store into a shared `argus-state` package
+ * (workspace dep). Until then: keep both files in sync — any field
+ * added here MUST be added to recovery's manifest.ts too (and vice
+ * versa) so that round-tripping a manifest written by one module does
+ * not silently drop fields owned by the other. `passthrough()` on the
+ * zod schema forgives forward-compat drift but only at runtime; the
+ * compiled types still need parity.
  */
 
 import {
@@ -26,14 +29,23 @@ import { z } from "zod";
 
 /**
  * Per-run manifest schema. Lives at
- * `$OMC_STATE_DIR/runs/<run_id>/manifest.json`. Tracks crash budget,
- * ralph iteration counters, tmux restart attempts, provider mode, and
- * the optional `next_prompt_prepend` field shared with the dispatcher
- * skill for /learner cadence (Block 5).
+ * `$OMC_STATE_DIR/runs/<run_id>/manifest.json`.
+ *
+ * Knowledge module exercises:
+ * - `phase` — current phase identifier (e.g., "harness", "first-batch").
+ * - `next_prompt_prepend` — set to `/learner` at phase boundaries; read
+ *   and cleared by OMC's submit-hook.
+ * - `phase_boundary_seen_at` — timestamp of the most recent transition
+ *   detected by the learner-cadence Stop hook. Helps debugging "did we
+ *   actually queue /learner at the boundary?" without grepping logs.
+ *
+ * Other fields exist for the recovery module's bookkeeping (crash
+ * count, ralph iteration counters, tmux restart attempts, provider
+ * mode). Knowledge does not modify them but must round-trip them
+ * correctly.
  *
  * `passthrough()` lets the manifest carry forward fields written by a
- * newer build without losing them on round-trip — important during
- * staged rollouts.
+ * newer build without losing them on round-trip.
  */
 export const RunManifest = z
   .object({
@@ -43,13 +55,10 @@ export const RunManifest = z
     phase: z.string().optional(),
     crash_count: z.number().int().nonnegative().default(0),
     last_verify_pass_at: z.string().datetime().optional(),
-    // task_id -> count (ralph iterations within the current phase)
     ralph_iterations: z.record(z.string(), z.number().int().nonnegative()).default({}),
-    // session_names that have already exhausted their one auto-restart
     tmux_restart_attempted: z.array(z.string()).default([]),
     provider_mode: z.enum(["max20", "api"]).default("max20"),
     provider_outage_started_at: z.string().datetime().nullable().default(null),
-    // /learner cadence — set by recovery hooks, consumed by OMC's submit hook
     next_prompt_prepend: z.string().optional(),
     // Knowledge / Block 5: timestamp of the last detected phase transition.
     phase_boundary_seen_at: z.string().datetime().optional(),
@@ -62,17 +71,9 @@ export type RunManifest = z.infer<typeof RunManifest>;
  * Atomic JSON store for manifest.json files under
  * `<stateDir>/runs/<run_id>/manifest.json`.
  *
- * - **Atomic writes** via tmp-file + fsync + rename(2). The temp file
- *   carries the writer pid so concurrent writers don't collide on the
- *   same temp name. Mode 0600 on both tmp and final file.
- * - **Cross-process locking** via a sidecar `manifest.lock` file.
- *   `update()` opens it with O_EXCL ("wx") to acquire; on EEXIST,
- *   spin-waits up to 2s (10ms intervals) before throwing. The lock
- *   is unlinked on every exit path including throws.
- *
- * For higher-contention scenarios, sqlite advisory locking would be a
- * cleaner replacement. We use the file-lock pattern here because it
- * needs no extra deps and works identically on Linux/macOS.
+ * Same semantics as `scripts/recovery/src/manifest.ts`: atomic writes
+ * via tmp-file + fsync + rename(2), cross-process serialisation via a
+ * sidecar `manifest.lock` opened O_EXCL. See the header TODO above.
  */
 export class ManifestStore {
   private readonly stateDir: string;
@@ -106,7 +107,6 @@ export class ManifestStore {
   }
 
   write(run_id: string, manifest: RunManifest): void {
-    // Validate before write so we never persist a corrupt shape.
     const validated = RunManifest.parse(manifest);
     const dir = join(this.stateDir, "runs", run_id);
     mkdirSync(dir, { recursive: true });
@@ -122,10 +122,6 @@ export class ManifestStore {
     renameSync(tmpPath, finalPath);
   }
 
-  /**
-   * Read-modify-write under a sidecar file lock. The callback receives a
-   * deeply-immutable manifest snapshot; it must return the new manifest.
-   */
   update(run_id: string, fn: (m: RunManifest) => RunManifest): RunManifest {
     const lockPath = this.lockPath(run_id);
     const dir = join(this.stateDir, "runs", run_id);
@@ -141,17 +137,15 @@ export class ManifestStore {
       this.write(run_id, next);
       return next;
     } finally {
-      // Release: close the descriptor, then unlink. unlink-while-open is
-      // safe on POSIX. On any throw above, both calls still execute.
       try {
         closeSync(lockFd);
       } catch {
-        // already closed somehow — proceed to unlink
+        // already closed
       }
       try {
         unlinkSync(lockPath);
       } catch {
-        // already gone — fine
+        // already gone
       }
     }
   }
@@ -160,7 +154,6 @@ export class ManifestStore {
     const deadline = Date.now() + this.lockMaxWaitMs;
     for (;;) {
       try {
-        // O_EXCL | O_CREAT — fails if file exists.
         return openSync(lockPath, "wx", 0o600);
       } catch (e) {
         if (!isEEXIST(e)) throw e;
@@ -169,8 +162,6 @@ export class ManifestStore {
             `ManifestStore.update: failed to acquire lock at ${lockPath} within ${this.lockMaxWaitMs}ms`,
           );
         }
-        // Busy-wait. Synchronous spin keeps the cross-process semantic
-        // simple; for our 5-concurrent worst case this completes in <50ms.
         const spinUntil = Date.now() + this.lockSpinMs;
         while (Date.now() < spinUntil) {
           // intentionally empty: short busy-wait
