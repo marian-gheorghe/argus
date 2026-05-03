@@ -208,3 +208,86 @@ describe("OutboundQueue", () => {
     }
   });
 });
+
+describe("OutboundQueue.pending_replies (Task 10)", () => {
+  test("insertPendingReply + findPendingReply round-trips", () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      q.insertPendingReply(-100, 4242, "gate_a", 17);
+      const found = q.findPendingReply(-100, 4242);
+      expect(found).not.toBeNull();
+      if (found) {
+        expect(found.gate_id).toBe("gate_a");
+        expect(found.prompt_message_id).toBe(17);
+      }
+    } finally {
+      q.close();
+    }
+  });
+
+  test("findPendingReply returns null when no row exists", () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      expect(q.findPendingReply(-100, 4242)).toBeNull();
+    } finally {
+      q.close();
+    }
+  });
+
+  test("insertPendingReply replaces on UNIQUE(chat_id, user_id) conflict", () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      q.insertPendingReply(-100, 4242, "gate_a", 17);
+      q.insertPendingReply(-100, 4242, "gate_b", 22);
+      const found = q.findPendingReply(-100, 4242);
+      expect(found).not.toBeNull();
+      if (found) {
+        expect(found.gate_id).toBe("gate_b");
+        expect(found.prompt_message_id).toBe(22);
+      }
+    } finally {
+      q.close();
+    }
+  });
+
+  test("deletePendingReply removes the row; subsequent find returns null", () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      q.insertPendingReply(-100, 4242, "gate_a", 17);
+      q.deletePendingReply(-100, 4242);
+      expect(q.findPendingReply(-100, 4242)).toBeNull();
+    } finally {
+      q.close();
+    }
+  });
+
+  test("expirePendingReplies deletes rows older than the cutoff and returns count", async () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      q.insertPendingReply(-100, 1, "gate_a", 1);
+      q.insertPendingReply(-100, 2, "gate_b", 2);
+      // Wait a tick so the cutoff comparison is meaningful at sub-second
+      // resolution, then expire everything older than 0s.
+      await new Promise((r) => setTimeout(r, 50));
+      const deleted = q.expirePendingReplies(0);
+      expect(deleted).toBe(2);
+      expect(q.findPendingReply(-100, 1)).toBeNull();
+      expect(q.findPendingReply(-100, 2)).toBeNull();
+    } finally {
+      q.close();
+    }
+  });
+
+  test("expirePendingReplies leaves recent rows intact", () => {
+    const q = new OutboundQueue(dbPath);
+    try {
+      q.insertPendingReply(-100, 1, "gate_a", 1);
+      // 1-hour cutoff: row was just inserted, should survive.
+      const deleted = q.expirePendingReplies(3600);
+      expect(deleted).toBe(0);
+      expect(q.findPendingReply(-100, 1)).not.toBeNull();
+    } finally {
+      q.close();
+    }
+  });
+});

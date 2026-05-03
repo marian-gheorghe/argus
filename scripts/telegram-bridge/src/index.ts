@@ -36,7 +36,16 @@ if (import.meta.main) {
   const gatesDir = process.env.OMC_GATES_DIR ?? `${process.env.HOME}/.claude/omc/gates`;
   mkdirSync(gatesDir, { recursive: true });
 
-  const app = buildApp({ queue, log });
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+  const app = buildApp({
+    queue,
+    log,
+    telegram,
+    gatesDir,
+    chatIds,
+    expectedSecret,
+  });
 
   const server = Bun.serve({ port, hostname: host, fetch: app.fetch });
   log.info({ port: server.port, host }, "argus-telegram-bridge listening");

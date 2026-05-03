@@ -179,23 +179,14 @@ describe("POST /webhook/* validation + enqueue", () => {
   });
 });
 
-describe("POST /telegram callback validation (Task 6 stub)", () => {
-  test("valid TelegramCallbackPayload → 200", async () => {
+describe("POST /telegram without telegram deps", () => {
+  test("buildApp without telegram/gatesDir/chatIds → 503 on /telegram", async () => {
+    // These deps are required for the callback handler; webhook + health
+    // tests intentionally omit them. The route returns 503 so a misconfigured
+    // deployment is loud rather than silently 404.
     const app = buildApp({ queue, log: silentLog });
     const res = await app.request(jsonRequest("/telegram", validCallback));
-    expect(res.status).toBe(200);
-  });
-
-  test("malformed body → 400", async () => {
-    const app = buildApp({ queue, log: silentLog });
-    const res = await app.request(jsonRequest("/telegram", { wrong: "shape" }));
-    expect(res.status).toBe(400);
-  });
-
-  test("malformed JSON → 400", async () => {
-    const app = buildApp({ queue, log: silentLog });
-    const res = await app.request(jsonRequest("/telegram", "{not-json"));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(503);
   });
 });
 

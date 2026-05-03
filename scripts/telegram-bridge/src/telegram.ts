@@ -62,6 +62,7 @@ export class TelegramClient {
     chat_id: number | string,
     text: string,
     keyboard?: InlineKeyboard,
+    opts?: { force_reply?: boolean },
   ): Promise<SendMessageResult> {
     const body: Record<string, unknown> = {
       chat_id,
@@ -69,6 +70,9 @@ export class TelegramClient {
       parse_mode: "Markdown",
     };
     if (keyboard) body.reply_markup = keyboard;
+    // `force_reply` opens the in-Telegram reply prompt with no inline kb;
+    // passes through as `reply_markup: { force_reply: true }` per the API.
+    if (opts?.force_reply) body.reply_markup = { force_reply: true };
 
     const res = await this.post("sendMessage", body);
     const data = (await res.json().catch(() => ({}))) as {

@@ -71,6 +71,22 @@ export class OutboundQueue {
         parked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         parking_reason TEXT NOT NULL
       );
+
+      -- Pending-reply state for the gate-reject flow. When a user taps
+      -- "Reject + comment" we send a force_reply prompt and remember the
+      -- (chat_id, user_id) -> gate_id mapping. The next message reply from
+      -- that user matching prompt_message_id finalizes the rejection.
+      -- UNIQUE(chat_id, user_id) so a re-reject by the same user replaces
+      -- the prior pending row (REPLACE on conflict).
+      CREATE TABLE IF NOT EXISTS pending_replies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        gate_id TEXT NOT NULL,
+        prompt_message_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE(chat_id, user_id)
+      );
     `);
   }
 
@@ -164,6 +180,58 @@ export class OutboundQueue {
   parkedDepth(): number {
     const row = this.db.query("SELECT COUNT(*) AS c FROM parking_lot").get() as { c: number };
     return row.c;
+  }
+
+  /**
+   * Insert (or replace) a pending-reply row for the gate-reject flow.
+   * Replaces any prior row for the same (chat_id, user_id) so a user
+   * tapping "Reject" twice with different gates is well-defined: the
+   * latest tap wins.
+   */
+  insertPendingReply(
+    chat_id: number,
+    user_id: number,
+    gate_id: string,
+    prompt_message_id: number,
+  ): void {
+    this.db
+      .query(
+        `INSERT OR REPLACE INTO pending_replies (chat_id, user_id, gate_id, prompt_message_id)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(chat_id, user_id, gate_id, prompt_message_id);
+  }
+
+  findPendingReply(
+    chat_id: number,
+    user_id: number,
+  ): { gate_id: string; prompt_message_id: number } | null {
+    const stmt = this.db.query<{ gate_id: string; prompt_message_id: number }, [number, number]>(
+      "SELECT gate_id, prompt_message_id FROM pending_replies WHERE chat_id = ? AND user_id = ?",
+    );
+    const row = stmt.get(chat_id, user_id);
+    return row ?? null;
+  }
+
+  deletePendingReply(chat_id: number, user_id: number): void {
+    this.db
+      .query("DELETE FROM pending_replies WHERE chat_id = ? AND user_id = ?")
+      .run(chat_id, user_id);
+  }
+
+  /**
+   * Delete all pending_replies older than `older_than_secs` and return the
+   * number deleted. Called by the dispatcher's idle path or a future
+   * watchdog so abandoned reject prompts don't accumulate.
+   */
+  expirePendingReplies(older_than_secs: number): number {
+    const res = this.db
+      .query(
+        `DELETE FROM pending_replies
+         WHERE created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ? || ' seconds')`,
+      )
+      .run(older_than_secs);
+    return Number(res.changes);
   }
 
   close(): void {
