@@ -182,3 +182,102 @@ Commits this session (5 total):
 - `phase-b: telegram-bridge launchd plist + run.sh wrapper + section_bridge`
 - `phase-b: clawhip routes for gate.* and warn-tier events`
 - `phase-b: runbook entry for tasks 11-13`
+
+### 2026-05-03 — Task 14: argus-router skill (OMC dispatcher / gate state machine)
+
+Closes the gate contract on the OMC side. The telegram-bridge has been
+sitting waiting for `<gate-id>.pending.json` files since Task 8; this task
+ships the producer of those files plus the `awaitDecision` polling loop and
+the speculative-continue branch helper. The skill lives at
+`skills/argus-router/` as a standalone Bun + TS project (mirrors
+`scripts/telegram-bridge/`'s tooling so an OMC Stop hook can `import` from
+it directly without a build step).
+
+**Layout:**
+
+```
+skills/argus-router/
+├── SKILL.md                          # frontmatter (name, triggers, source) + ~290-line body
+├── lib/
+│   ├── gate-types.ts                 # zod schemas (duplicated from bridge for now)
+│   └── gate-controller.ts            # the state machine
+├── tests/
+│   └── gate-controller.test.ts       # 16 tests, real fs against mkdtempSync, real git in temp dir
+├── package.json                      # zod dep; biome, @types/bun, typescript dev deps
+├── tsconfig.json                     # strict + noUncheckedIndexedAccess (mirrors bridge)
+├── biome.json                        # recommended rules + 100-col + 2-space (mirrors bridge)
+├── .gitignore                        # ignores node_modules, sqlite, .env; negates !bun.lock
+└── bun.lock                          # committed for VPS reproducibility (Phase C)
+```
+
+**Surface area (`GateController`):**
+
+- `openGate(opts)` — atomic `tmp+fsync+rename` write of `<gate-id>.pending.json` (mode 0o600), then dual-emit a `gate.pending` clawhip event.
+- `awaitDecision(opts)` — poll for `<gate-id>.decision.json` every `pollIntervalMs` (default 30s); deadline read from `pending.timeout_at` so a controller restart preserves the original timeout. On deadline elapse: emit `gate.timeout` (severity=page) and return `{decision: "timeout"}`. AbortSignal-aware: aborting mid-sleep throws AbortError without waiting out the poll interval.
+- `fireGate(opts)` — convenience: open + await chained.
+- `createSpeculativeBranch(opts)` — for `deferred` outcomes, branch `speculative/<run_id>/<gate_id>` from HEAD via `git branch` (not checkout). Idempotent: re-entry returns `{created: false}`.
+
+**`gate_id` shape: `<type>-<run_id>-<6 hex>`.**
+
+- Type (`PRD` / `code-review` / `final-integration`) for operator orientation + clawhip routing.
+- `run_id` to scope all of a single agent run's gates.
+- 6 hex chars (truncated `crypto.randomUUID()`) so re-opening the same phase produces a fresh file. Reusing a `gate_id` would silently dedupe-drop in the bridge's queue (the queue's UNIQUE(event_id) — `gate.pending:<gate_id>` — guards against double-processing but also means we can't reuse the key for a second round).
+
+**`clawhipEmit` injection contract** (the design choice that makes the dual-emission cleanly testable):
+
+- `undefined` (production default) — shell out to `clawhip send` via `Bun.spawn`. Phase A's `install-mac.sh::section_clawhip` guarantees `clawhip` is on PATH.
+- function — invoke directly. Tests use this; future hosts can use it to swap transports without touching the controller.
+- `null` — explicitly skip emission. The pending.json is on disk anyway, so the bridge's chokidar watcher sees the gate. Useful for testing the durable-path fallback in isolation.
+
+If the shellout fails (binary missing, exit non-zero) the controller logs `console.warn` and continues — losing clawhip-side emit is degraded-but-correct because the file-watcher path is the durable fallback. This is the property design §1's dual-emission promised; verifying it cost no extra logic since `Bun.spawn` already gives us non-throwing exitCode access.
+
+**Speculative-continue branch idempotency:** `git branch --list <name>` prints the branch on stdout if it exists, empty otherwise (always exit 0). Splitting "existence check" from "create" lets us return `{created: false}` cleanly rather than relying on parsing `git branch <name>`'s "fatal: A branch named ... already exists" error. The branch is created from HEAD without checkout — workers stay on their per-worker branches; the orchestrator promotes/preserves the speculative branch later per design §4.6.
+
+**Schema duplication (intentional, for now):** `lib/gate-types.ts` re-defines `GatePending`/`GateDecision` with the same zod shapes as `scripts/telegram-bridge/src/schemas.ts`. The duplication lets each project install + typecheck + test independently. Phase C cleanup task: extract to a shared `argus-schemas` package and have both projects depend on it. The skill's tests round-trip through both schemas (write a pending → re-parse with `GatePending`; bridge writes a decision → re-parse with `GateDecision`) so any future drift gets caught.
+
+**Tests (16, all real-fs / real-git):**
+
+Coverage groups:
+- `openGate`: writes valid GatePending JSON, calls injected emit with `gate.pending`, returns unique gate_ids across calls (25-iteration collision check), file mode is 0o600, no `.tmp.<pid>` artifacts left behind, `clawhipEmit: null` skips emit but still writes the file, custom `timeout_secs` reflected in `timeout_at`.
+- `awaitDecision`: returns parsed decision when file appears mid-poll, returns `{decision: "timeout"}` + emits `gate.timeout` after deadline, honors AbortSignal (rejects with AbortError, no extra emits), rejected decision with comment round-trips intact.
+- `fireGate`: happy path (open + await + return decision; uses a watch-and-write coroutine to drop the decision file after openGate runs).
+- `createSpeculativeBranch`: creates the branch in a fresh `git init` repo, idempotent on second call.
+- Schema sanity: emitted clawhip payload contains the GatePending fields the bridge needs, written decision file validates against `GateDecision`.
+
+Tests use `mkdtempSync` per-test with `rmSync` cleanup in `afterEach` so a failed run doesn't pollute `/tmp`. Real `git` interactions go through `Bun.spawnSync` against an isolated repo (no risk of touching the actual worktree — the test sets up its own `git init` + `commit` in tmpdir).
+
+**Tradeoffs / design choices:**
+
+- **Why a class (`GateController`) for what's mostly stateless?** Symmetry with the bridge's `OutboundQueue` / `GateWatcher` / `Dispatcher`, and futureproofing for Phase C state (e.g. an in-memory `Map<gate_id, AwaitController>` so `awaitDecision` calls can be re-entrant + cancellable from a single host). The class costs nothing now and keeps the option open.
+- **`AwaitDecisionExtras._timeoutAtMs` (underscore-prefixed, internal):** lets `fireGate` pass through the deadline it already computed without re-reading the pending file. Documented as private; tests don't use it.
+- **`GateDecisionOrTimeout` discriminated union (not a throw on timeout):** timeouts are an *expected* outcome (operator on holiday), not an error. Forcing the caller into `try/catch` would mix error-handling with control-flow. The exhaustive switch in OMC's hook is the contract that ensures future variants get handled.
+- **`severity: "page"` on `gate.timeout` (not `critical`):** mirrors Task 13's clawhip routes — a timeout is a paged human decision, not a system-down event. Reserving `critical` for harness regressions / cost-kills aligns with the tier semantics in design §5.
+- **AbortSignal in `awaitDecision`, not `openGate`:** opening is a few syscalls + one shellout; the abort surface that matters is the long polling loop. Adding it everywhere would be bikeshedding.
+
+**Verification (from `skills/argus-router/`):**
+
+- `bun install` → `8 packages installed [596ms]`.
+- `bun run typecheck` → exit 0, silent.
+- `bun test` → `16 pass / 0 fail / 59 expect() calls` across 1 file (`tests/gate-controller.test.ts`).
+- `bun run lint` → `Checked 3 files`, no errors, no warnings.
+
+**Wiring with the rest of Phase B:**
+
+The skill is the *producer* of the contract the bridge has been waiting for. End-to-end now: this skill writes `gate_X.pending.json` → bridge's `GateWatcher` (chokidar) sees it → enqueues via `OutboundQueue` → `Dispatcher` posts to Telegram → operator taps a button → bridge's `handle-callback.ts` writes `gate_X.decision.json` → this skill's `awaitDecision` poll picks it up → returns to OMC. Plus the parallel clawhip path for real-time freshness. Both paths through the bridge's `gate.pending:<gate_id>` event_id dedup so we can't double-render.
+
+**Open concerns flagged for Phase C:**
+
+- **No persistent rejection-comment storage.** A reject-then-redo round-trip puts the comment in `decision.json` until OMC's orchestrator reads it. If OMC crashes before reading, the comment lives only in the file (which could be GC'd by a later Phase C cleanup task). Phase C: per-run rejection history file.
+- **No cost ceiling on speculative branches.** A defer can keep workers running for hours on a branch that may never merge. Phase C: cost-aware deferral with a hard cap.
+- **No `awaitDecision` watchdog across OMC restarts.** If OMC dies mid-poll, no one is watching `decision.json`. The pending file persists, the decision file (if written) persists, but the OMC promise that started `awaitDecision` is gone. Phase C: file-watcher-based recovery on OMC startup that reattaches to in-flight gates.
+- **`clawhip send` shellout cost.** ~50ms per emit on macOS. Acceptable at 3 gates/run, would matter at 30+/min — Phase D may swap to a long-lived JSON-RPC connection if clawhip ships one.
+- **Schema duplication risk.** Two copies of `GatePending`/`GateDecision`. Phase C cleanup: shared `argus-schemas` package. Tests on both sides cover the contract today, but the discipline is on the human reviewer.
+
+**Phase B status after Task 14:** the entire gate state machine is in place. Tasks 15 + 16 are smoke-test + merge-decision; no more code is expected.
+
+Commits this session (5 total):
+- `phase-b: bootstrap argus-router skill project skeleton`
+- `phase-b: argus-router gate types (zod schemas + decision union)`
+- `phase-b: argus-router gate controller (open/await/fire/spec-branch)`
+- `phase-b: argus-router SKILL.md manifest + body`
+- `phase-b: runbook entry for task 14 (argus-router skill)`
