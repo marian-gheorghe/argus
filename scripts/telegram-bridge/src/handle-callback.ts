@@ -1,9 +1,18 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Context } from "hono";
 import type { Logger } from "pino";
 import type { OutboundQueue } from "./queue.ts";
-import { type GateDecision, TelegramCallbackPayload } from "./schemas.ts";
+import { type GateDecision, GatePending, TelegramCallbackPayload } from "./schemas.ts";
 import type { TelegramClient } from "./telegram.ts";
 
 /**
@@ -114,10 +123,12 @@ export function buildCallbackHandler(deps: CallbackDeps): CallbackHandler {
       return c.json({ error: `invalid action: ${action}` }, 400);
     }
 
+    const run_id = readRunIdForGate(gatesDir, gate_id, log);
+
     if (action === "approve") {
       writeDecisionAtomic(gatesDir, {
         gate_id,
-        run_id: gate_id, // run_id is unknown at decision time; OMC reconciles via gate_id.
+        run_id,
         decision: "approved",
         decided_at: new Date().toISOString(),
         decided_by_chat_id: cq.message.chat.id,
@@ -130,7 +141,7 @@ export function buildCallbackHandler(deps: CallbackDeps): CallbackHandler {
     if (action === "defer") {
       writeDecisionAtomic(gatesDir, {
         gate_id,
-        run_id: gate_id,
+        run_id,
         decision: "deferred",
         decided_at: new Date().toISOString(),
         decided_by_chat_id: cq.message.chat.id,
@@ -187,9 +198,10 @@ export function buildCallbackHandler(deps: CallbackDeps): CallbackHandler {
       return c.json({ ok: true, ignored: "reply target mismatch" }, 200);
     }
 
+    const run_id = readRunIdForGate(gatesDir, pending.gate_id, log);
     writeDecisionAtomic(gatesDir, {
       gate_id: pending.gate_id,
-      run_id: pending.gate_id,
+      run_id,
       decision: "rejected",
       comment: text,
       decided_at: new Date().toISOString(),
@@ -261,4 +273,38 @@ function writeDecisionAtomic(gatesDir: string, decision: GateDecision): void {
   fsyncSync(fd);
   closeSync(fd);
   renameSync(tmp, dst);
+}
+
+/**
+ * Recover the original `run_id` for a gate by reading its `<gate_id>.pending.json`.
+ * The bridge doesn't carry run_id through the callback path, so the pending
+ * file (written by the OMC dispatcher skill at openGate time) is the source
+ * of truth. If the pending file is missing or unreadable, falls back to
+ * `gate_id` and logs a warning — the decision still records correctly, OMC
+ * just has to reconcile via gate_id.
+ */
+function readRunIdForGate(gatesDir: string, gate_id: string, log: Logger): string {
+  const path = join(gatesDir, `${gate_id}.pending.json`);
+  if (!existsSync(path)) {
+    log.warn({ gate_id, path }, "pending.json missing; using gate_id as run_id fallback");
+    return gate_id;
+  }
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = GatePending.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      log.warn(
+        { gate_id, path, issues: parsed.error.issues },
+        "pending.json failed schema validation; using gate_id as run_id fallback",
+      );
+      return gate_id;
+    }
+    return parsed.data.run_id;
+  } catch (e) {
+    log.warn(
+      { gate_id, path, err: e instanceof Error ? e.message : String(e) },
+      "pending.json read/parse error; using gate_id as run_id fallback",
+    );
+    return gate_id;
+  }
 }
