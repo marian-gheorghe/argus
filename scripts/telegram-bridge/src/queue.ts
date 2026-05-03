@@ -25,9 +25,22 @@ export interface EnqueueResult {
  *
  * Design notes:
  * - `event_id` is a UNIQUE constraint → INSERT-OR-IGNORE gives idempotent enqueue.
+ *   When `enqueue` is called with an existing `event_id`, the new payload is
+ *   silently discarded and the existing row id is returned with `created: false`.
+ *   This is correct dedup semantics for clawhip-emitted events (same event_id =>
+ *   same payload by contract).
  * - `next_attempt_at` is the visibility timestamp; `peek` only returns rows due now.
+ *   Ordering: `next_attempt_at ASC, id ASC` — proper FIFO of due rows; failed rows
+ *   that come back due after a backoff don't permanently win against fresh enqueues.
  * - `parking_lot` holds rows that have hit a permanent error; `parkPermanent` is
  *   transactional so a crash mid-park can't lose or duplicate the row.
+ *
+ * Concurrency assumption: SINGLE CONSUMER. The dispatcher loop is the only caller
+ * of `peek` + `markDelivered` / `markFailed` / `parkPermanent`. Multiple ingest
+ * paths can call `enqueue` concurrently (HTTP receiver + gate-file watcher) — that
+ * is safe via the UNIQUE constraint and INSERT OR IGNORE. If a future refactor
+ * spawns multiple dispatcher workers, add an `in_flight_until` column with a
+ * conditional UPDATE-RETURNING claim pattern; do not add naive parallel `peek`s.
  */
 export class OutboundQueue {
   private readonly db: Database;
@@ -86,7 +99,7 @@ export class OutboundQueue {
         `SELECT id, event_id, payload, enqueued_at, attempts, next_attempt_at, last_error
          FROM outbound
          WHERE next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         ORDER BY id ASC
+         ORDER BY next_attempt_at ASC, id ASC
          LIMIT 1`,
       )
       .get();
