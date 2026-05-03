@@ -1,0 +1,186 @@
+---
+# Argus — Mac -> VPS state cutover. Per design §10.3.
+#
+# Phased — operator picks a phase via -e argus_cutover_phase=<phase>:
+#   stop_source   stop launchd daemons on the Mac (read-only on VPS).
+#   rsync         rsync four state dirs Mac -> VPS over SSH.
+#   start_target  enable + start systemd --user units on the VPS.
+#   verify        re-run the standard health checks.
+#   all           run all four phases in sequence.
+#
+# Idempotent. Each phase is safe to re-run; rsync uses --delete-after for
+# convergence.
+#
+# Reversible. The Mac's launchd plists stay on disk after stop_source —
+# `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.argus.*.plist`
+# brings them back. Copy the plist paths from launchd/ if you need them.
+#
+# Run:
+#   ansible-playbook playbooks/20-cutover.yml -e argus_cutover_phase=stop_source
+#   ansible-playbook playbooks/20-cutover.yml -e argus_cutover_phase=rsync
+#   ansible-playbook playbooks/20-cutover.yml -e argus_cutover_phase=start_target
+#   ansible-playbook playbooks/20-cutover.yml -e argus_cutover_phase=verify
+#   ansible-playbook playbooks/20-cutover.yml -e argus_cutover_phase=all
+#
+# Pre-flight (operator's responsibility):
+#   - 00-bootstrap.yml + 10-stack.yml (with argus_stack_start_services=false)
+#     have been run against the target so units are installed but stopped.
+#   - The Mac is reachable from the laptop running this playbook
+#     (`ansible_env.HOME` resolves to the operator's home where the launchd
+#     plists live).
+#   - The Mac and VPS are both reachable over Tailscale OR over public SSH
+#     (rsync is wrapped to use the host's default ssh config).
+
+- hosts: argus_vps
+  gather_facts: true
+  vars:
+    argus_cutover_phase: "stop_source"
+    argus_cutover_mac_user: "{{ lookup('env', 'USER') }}"
+    argus_mac_state_paths:
+      - src: "{{ lookup('env', 'HOME') }}/.claude/omc/"
+        dest: "{{ argus_state_dir }}/"
+      - src: "{{ lookup('env', 'HOME') }}/.argus/"
+        dest: "{{ argus_argus_dir }}/"
+      - src: "{{ lookup('env', 'HOME') }}/.clawhip/"
+        dest: "{{ argus_clawhip_dir }}/"
+    argus_mac_launchd_labels:
+      - com.argus.clawhip
+      - com.argus.omc-wait
+      - com.argus.telegram-bridge
+      - com.argus.watchdog
+      - com.argus.recovery
+      - com.argus.cloudflared
+
+  tasks:
+    - name: Cutover — sanity check phase value
+      ansible.builtin.assert:
+        that:
+          - argus_cutover_phase in ["stop_source", "rsync", "start_target", "verify", "all"]
+        fail_msg: "argus_cutover_phase must be one of stop_source/rsync/start_target/verify/all"
+
+    # ------------------------------------------------------------------
+    # Phase 1 — stop launchd daemons on the Mac (delegate_to: localhost).
+    # ------------------------------------------------------------------
+    - name: "Cutover (stop_source) — unload Mac launchd plists"
+      ansible.builtin.command: >
+        launchctl bootout gui/{{ lookup('pipe', 'id -u') }}
+        {{ lookup('env', 'HOME') }}/Library/LaunchAgents/{{ item }}.plist
+      delegate_to: localhost
+      become: false
+      register: bootout_result
+      changed_when: bootout_result.rc == 0
+      failed_when:
+        - bootout_result.rc != 0
+        - "'No such process' not in (bootout_result.stderr | default(''))"
+        - "'Could not find specified service' not in (bootout_result.stderr | default(''))"
+      loop: "{{ argus_mac_launchd_labels }}"
+      when: argus_cutover_phase in ["stop_source", "all"]
+
+    # ------------------------------------------------------------------
+    # Phase 2 — rsync state Mac -> VPS (delegate_to: localhost).
+    # ------------------------------------------------------------------
+    - name: "Cutover (rsync) — rsync state from Mac to VPS"
+      ansible.builtin.command: >
+        rsync -aP --delete-after
+        --rsync-path="mkdir -p {{ item.dest }} && rsync"
+        {{ item.src }}
+        {{ argus_user }}@{{ ansible_host }}:{{ item.dest }}
+      delegate_to: localhost
+      become: false
+      loop: "{{ argus_mac_state_paths }}"
+      register: rsync_result
+      changed_when: rsync_result.rc == 0
+      when: argus_cutover_phase in ["rsync", "all"]
+      tags: [rsync]
+
+    # ------------------------------------------------------------------
+    # Phase 3 — enable + start systemd --user units on the VPS.
+    # ------------------------------------------------------------------
+    - name: "Cutover (start_target) — daemon-reload --user"
+      ansible.builtin.systemd:
+        daemon_reload: true
+        scope: user
+      become: true
+      become_user: "{{ argus_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ argus_user_uid | default(1001) }}"
+      when: argus_cutover_phase in ["start_target", "all"]
+
+    - name: "Cutover (start_target) — enable + start each Argus user unit"
+      ansible.builtin.systemd:
+        name: "{{ item }}.service"
+        enabled: true
+        state: started
+        scope: user
+      become: true
+      become_user: "{{ argus_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ argus_user_uid | default(1001) }}"
+      loop: "{{ argus_stack_services }}"
+      when: argus_cutover_phase in ["start_target", "all"]
+
+    # ------------------------------------------------------------------
+    # Phase 4 — health verification.
+    # ------------------------------------------------------------------
+    - name: "Cutover (verify) — clawhip /status"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:25294/status"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: clawhip_health
+      until: clawhip_health.status in [200, 204]
+      retries: 5
+      delay: 3
+      when: argus_cutover_phase in ["verify", "all"]
+
+    - name: "Cutover (verify) — bridge /health"
+      ansible.builtin.uri:
+        url: "http://{{ bridge_host }}:{{ bridge_port }}/health"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: bridge_health
+      until: bridge_health.status in [200, 204]
+      retries: 5
+      delay: 3
+      when: argus_cutover_phase in ["verify", "all"]
+
+    - name: "Cutover (verify) — recovery /healthz"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ recovery_port }}/healthz"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: recovery_health
+      until: recovery_health.status in [200, 204]
+      retries: 5
+      delay: 3
+      when: argus_cutover_phase in ["verify", "all"]
+
+    - name: "Cutover (verify) — units active"
+      ansible.builtin.command: "systemctl --user is-active {{ item }}.service"
+      changed_when: false
+      become: true
+      become_user: "{{ argus_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ argus_user_uid | default(1001) }}"
+      register: unit_status
+      loop: "{{ argus_stack_services }}"
+      failed_when: unit_status.stdout != "active"
+      when: argus_cutover_phase in ["verify", "all"]
+
+    - name: "Cutover — done banner"
+      ansible.builtin.debug:
+        msg: |
+          ---
+          Cutover phase '{{ argus_cutover_phase }}' completed on {{ inventory_hostname }}.
+          {% if argus_cutover_phase in ["verify", "all"] %}
+          clawhip:  {{ clawhip_health.status }}
+          bridge:   {{ bridge_health.status }}
+          recovery: {{ recovery_health.status }}
+          {% endif %}
+          To revert: stop systemd units on the VPS and
+            `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.argus.*.plist`
+          on the Mac. State on the VPS remains intact for a re-cutover.
+          ---
