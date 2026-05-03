@@ -1,0 +1,39 @@
+---
+# Argus — install the full stack under the argus user.
+#
+# Sub-tasks broken into logical files for readability. Each is idempotent.
+# Order matters: directories first, then runtimes, then repo, then deps,
+# then secrets/config, then unit templates, then enable/start.
+
+- name: Argus directory layout
+  ansible.builtin.import_tasks: directories.yml
+  tags: [stack, dirs]
+
+- name: Argus language runtimes (Bun, Node, Rust)
+  ansible.builtin.import_tasks: runtimes.yml
+  tags: [stack, runtimes]
+
+- name: Argus repo clone + install
+  ansible.builtin.import_tasks: repo.yml
+  tags: [stack, repo]
+
+- name: Argus secrets file (vault -> ~/.argus/secrets.env)
+  ansible.builtin.import_tasks: secrets.yml
+  tags: [stack, secrets]
+
+- name: Argus rendered config files (clawhip, policy, pricing)
+  ansible.builtin.import_tasks: config.yml
+  tags: [stack, config]
+
+- name: Argus systemd --user units
+  ansible.builtin.import_tasks: services.yml
+  tags: [stack, systemd]
+
+- name: Argus Claude Code hooks (cost-tracker, recovery)
+  ansible.builtin.import_tasks: hooks.yml
+  tags: [stack, hooks]
+
+- name: Argus enable + start daemons
+  ansible.builtin.import_tasks: start.yml
+  when: argus_stack_start_services
+  tags: [stack, start]

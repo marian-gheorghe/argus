@@ -1,0 +1,5 @@
+---
+# Stub — populated in the hooks-registration commit.
+- name: Hooks — stub
+  ansible.builtin.debug:
+    msg: "argus_stack/tasks/hooks.yml is a stub; populated in the hooks commit"

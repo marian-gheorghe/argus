@@ -1,0 +1,67 @@
+---
+# Default variables for the `argus_stack` role.
+# Most are overridable via group_vars/argus_vps.yml.
+
+# --- Service user (must match argus_user role's defaults) -----------------
+argus_user: argus
+argus_user_home: "/home/{{ argus_user }}"
+
+# --- Path layout ----------------------------------------------------------
+argus_state_dir: "{{ argus_user_home }}/.claude/omc"
+argus_argus_dir: "{{ argus_user_home }}/.argus"
+argus_clawhip_dir: "{{ argus_user_home }}/.clawhip"
+argus_repo_dir: "{{ argus_user_home }}/work/argus"
+argus_systemd_user_dir: "{{ argus_user_home }}/.config/systemd/user"
+argus_npm_global_prefix: "{{ argus_user_home }}/.npm-global"
+
+# --- Toolchain installer URLs (override only for offline install) ---------
+argus_bun_install_url: "https://bun.sh/install"
+argus_rustup_install_url: "https://sh.rustup.rs"
+
+# --- Resolved binary paths (used by systemd unit templates) ---------------
+argus_bun_bin: "{{ argus_user_home }}/.bun/bin/bun"
+argus_omc_bin: "{{ argus_npm_global_prefix }}/bin/omc"
+argus_cargo_bin_dir: "{{ argus_user_home }}/.cargo/bin"
+argus_clawhip_bin: "{{ argus_cargo_bin_dir }}/clawhip"
+
+# --- Repo clone -----------------------------------------------------------
+argus_repo_url: "https://github.com/USER/argus.git"
+argus_repo_branch: "main"
+
+# --- Daemons --------------------------------------------------------------
+# Set to false to skip starting the daemon as part of the install (useful for
+# the cutover playbook, which installs the stack but defers start until after
+# rsync). All daemons are still ENABLED so reboot brings them up.
+argus_stack_start_services: true
+
+# Service names that the role installs and (optionally) starts.
+argus_stack_services:
+  - clawhip
+  - omc-wait
+  - telegram-bridge
+  - watchdog
+  - recovery
+
+# --- Bun project subdirs in the repo --------------------------------------
+argus_bun_projects:
+  - scripts/telegram-bridge
+  - scripts/cost-tracker
+  - scripts/watchdog
+  - scripts/recovery
+
+# --- Watchdog tunables (mirror launchd plist defaults) -------------------
+watchdog_interval_ms: 30000
+watchdog_threshold: 2
+watchdog_restart_cooldown_ms: 60000
+watchdog_pending_replies_older_than_secs: 7200
+
+# --- Recovery tunables (mirror launchd plist defaults) -------------------
+recovery_port: 9601
+ralph_max_iterations: 30
+fake_completion_freshness_ms: 300000
+provider_page_after_ms: 7200000
+crash_budget_threshold: 3
+
+# --- Bridge tunables -----------------------------------------------------
+bridge_host: "127.0.0.1"
+bridge_port: 9501

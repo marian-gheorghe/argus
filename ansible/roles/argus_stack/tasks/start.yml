@@ -1,0 +1,5 @@
+---
+# Stub — populated in the systemd-units commit (paired with services.yml).
+- name: Start — stub
+  ansible.builtin.debug:
+    msg: "argus_stack/tasks/start.yml is a stub; populated in the systemd-units commit"

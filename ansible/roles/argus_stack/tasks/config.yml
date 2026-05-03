@@ -1,0 +1,5 @@
+---
+# Stub — populated in the secrets+config commit.
+- name: Config — stub
+  ansible.builtin.debug:
+    msg: "argus_stack/tasks/config.yml is a stub; populated in the secrets+config commit"
