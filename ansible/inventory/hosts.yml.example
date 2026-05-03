@@ -1,0 +1,22 @@
+---
+# Argus — example Ansible inventory.
+#
+# Operator workflow:
+#   1. cp inventory/hosts.yml.example inventory/hosts.yml
+#   2. Replace ansible_host with the Hetzner CX32's public IPv4.
+#   3. Initial bootstrap runs as root over SSH; subsequent playbooks switch to
+#      the `argus` service user once 00-bootstrap has provisioned it.
+#
+# `hosts.yml` is gitignored — only this example file is committed.
+all:
+  children:
+    argus_vps:
+      hosts:
+        argus-prod:
+          # Replace with the public IPv4 of the Hetzner CX32 (or its tailnet
+          # hostname once tailscale is up).
+          ansible_host: 1.2.3.4
+          # During 00-bootstrap we connect as root with the cloud-init key.
+          # 10-stack and 20-cutover override this to ansible_user: argus.
+          ansible_user: root
+          ansible_python_interpreter: /usr/bin/python3

@@ -1,0 +1,52 @@
+---
+# Argus — non-secret group variables for the argus_vps inventory group.
+#
+# Operator workflow:
+#   1. cp group_vars/argus_vps.yml.example group_vars/argus_vps.yml
+#   2. Fill in admin_ssh_pubkey, public_domain, etc.
+#   3. Secrets stay in argus_vps.vault.yml (see argus_vps.vault.yml.example).
+#
+# `argus_vps.yml` is gitignored — only this example file is committed.
+
+# --- Service user ---------------------------------------------------------
+argus_user: argus
+argus_user_uid: 1001
+argus_user_home: "/home/{{ argus_user }}"
+argus_user_shell: /bin/bash
+
+# --- Argus state paths ----------------------------------------------------
+argus_state_dir: "{{ argus_user_home }}/.claude/omc"
+argus_argus_dir: "{{ argus_user_home }}/.argus"
+argus_clawhip_dir: "{{ argus_user_home }}/.clawhip"
+argus_repo_dir: "{{ argus_user_home }}/work/argus"
+
+# --- Repo to clone --------------------------------------------------------
+# Set to a public HTTPS URL or use SSH with a deploy key delivered out-of-band.
+argus_repo_url: "https://github.com/USER/argus.git"
+argus_repo_branch: main
+
+# --- SSH key for the operator ---------------------------------------------
+# Public key only — added to argus_user's authorized_keys. PRIVATE key stays
+# on the operator's laptop.
+admin_ssh_pubkey: "ssh-ed25519 AAAA... operator@laptop"
+
+# --- Network / firewall ---------------------------------------------------
+# UFW allows SSH only from this CIDR. Default is the tailscale CGNAT range
+# (100.64.0.0/10) so the box is only SSH-reachable over the tailnet.
+ufw_ssh_source: "100.64.0.0/10"
+
+# --- Public ingress -------------------------------------------------------
+# DNS A record points at this VPS. nginx terminates TLS and reverse-proxies
+# /clawhip/github -> :25294 and /telegram -> :9501.
+public_domain: "argus.example.com"
+nginx_ssl_email: "ops@example.com"
+
+# --- Secrets (resolved from vault) ----------------------------------------
+# These pull from group_vars/argus_vps.vault.yml. See
+# argus_vps.vault.yml.example for the canonical key list.
+tailscale_authkey: "{{ vault_tailscale_authkey }}"
+
+# --- Cutover toggles (used by 20-cutover.yml) -----------------------------
+# Phase the cutover so the operator can run pre-checks separately from the
+# rsync + start. See playbooks/20-cutover.yml comments for details.
+argus_cutover_phase: "stop_source"  # one of: stop_source | rsync | start_target | verify
