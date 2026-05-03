@@ -20,9 +20,9 @@ findings as you go; do NOT delete history. Future-you (and the chaos suite +
 - [x] Task 1.3: Hook registration + Max20 no-op mode
 
 ### Block 2 — Watchdog
-- [ ] Task 2.1: Watchdog as a Bun service (modular checks) — TDD
-- [ ] Task 2.2: Linux systemd-watchdog integration
-- [ ] Task 2.3: launchd plist (Mac) + smoke test
+- [x] Task 2.1: Watchdog as a Bun service (modular checks) — TDD
+- [x] Task 2.2: Linux systemd-watchdog integration
+- [x] Task 2.3: launchd plist (Mac) + smoke test
 
 ### Block 3 — Recovery Matrix Automation
 - [ ] Task 3.1: Ralph iteration cap + fake-completion guard
@@ -172,3 +172,213 @@ Exit 0 even with a missing policy file. Hook crash-resistance verified.
   these subcommands exist on OMC. If a future OMC release renames them,
   the hook still exits 0 and only the auto-pause/cancel side effect is
   lost — not the cost.* event. That degrades gracefully.
+
+### 2026-05-03 — Block 2: Watchdog (Tasks 2.1, 2.2, 2.3)
+
+Implemented across seven commits on `phase-c/hardening`:
+
+1. `phase-c: bootstrap watchdog Bun project + Check interface + platform abstraction`
+2. `phase-c: clawhip + bridge + omc-wait health checks (TDD)`
+3. `phase-c: pending-replies expiry check (Phase B issue 3 followup)`
+4. `phase-c: escalation policy + OMC native callback dead-man's-switch`
+5. `phase-c: runner loop + sd_notify hook + main entry`
+6. `phase-c: watchdog launchd plist + section_watchdog install`
+7. `phase-c: runbook entry for Block 2 (watchdog)` (this commit)
+
+#### What landed
+
+- `scripts/watchdog/` — full Bun TS project mirroring the cost-tracker /
+  telegram-bridge layout. Strict TS, biome, bun:test, pino + zod deps.
+  Committed `bun.lock` for reproducibility (.gitignore negation).
+- `src/check.ts` — minimal `Check` interface (`name`, `check(): Promise<{healthy,detail}>`,
+  `restart(): Promise<{ok,detail}>`). Implementations MUST NOT throw —
+  failures are reported via the result shape.
+- `src/platform.ts` — Platform detection (`darwin` / `linux`),
+  `ServiceManager` interface, `LaunchdManager` (`launchctl kickstart -k
+  gui/<uid>/<label>`), `SystemdManager` (`systemctl --user restart
+  <label>`), and `makeServiceManager` factory. Spawn is dependency-
+  injected via `SpawnFn` so tests never shell out.
+- `src/checks/clawhip.ts`, `src/checks/bridge.ts` — HTTP probes against
+  `http://127.0.0.1:25294/status` (clawhip) and `http://127.0.0.1:9501/health`
+  (bridge). AbortController-based timeout (default 5s); non-200, network
+  throw, and abort all collapse to `healthy:false`. A narrow `FetchFn`
+  type sidesteps Bun's `typeof fetch` requiring a `preconnect` member.
+- `src/checks/omc-wait.ts` — pgrep-based liveness (`pgrep -f "omc wait"`).
+  Exit 0 healthy; exit 1 = "not running" (unhealthy); exit ≥2 carries the
+  stderr in the detail. Document the `pgrep -f` false-positive risk
+  (`cat omc wait.log` would also match) — acceptable in practice for the
+  watchdog's controlled environment.
+- `src/checks/pending-replies.ts` — Phase B Issue 3 followup. Connects
+  to the bridge's sqlite at `$HOME/.argus/state/bridge-queue.sqlite`,
+  ensures the `pending_replies` schema (CREATE TABLE IF NOT EXISTS so
+  the bridge's DDL always wins), DELETEs rows older than 7200s. Always
+  returns `healthy:true` — its purpose is the side effect, not the
+  health signal. Restart is a no-op. **The DELETE + DDL are duplicated
+  from `scripts/telegram-bridge/src/queue.ts` to avoid a cross-package
+  dependency on the bridge module — flagged as Phase C+ cleanup
+  (extract `argus-sqlite-types` shared package).**
+- `src/escalation.ts` — `DeadMan` interface; `OMCNativeCallbackDeadMan`
+  shells out to `omc emit --tier critical --event <check>.dead-man
+  --message ... --payload-json ...` (bypassing clawhip — independent
+  path, since clawhip might be the dead daemon we're escalating about);
+  `MockDeadMan` for tests. `Escalator` class implements the policy:
+  counter < threshold → throttled; ≥ threshold + within cooldown →
+  throttled; ≥ threshold + outside cooldown → restart; restart fail
+  or throw → emit dead-man. Cooldown stamps the attempt regardless of
+  outcome so a permanently broken service doesn't get kickstart-spammed.
+  Dead-man emit failure is logged at FATAL but never propagated.
+- `src/runner.ts` — `Runner` class with the tick loop. Per-check
+  failure counters; resets on healthy; resets on `action="restarted"`.
+  Per-check exceptions are caught and folded into `{healthy:false}` so
+  one buggy check cannot crash the loop. `sdNotify()` is called once
+  per tick — the loop-completed semantic — so systemd's WatchdogSec
+  can KILL+restart this process if it stops ticking.
+- `src/index.ts` — main entrypoint. `build()` wires production deps
+  from env (`BRIDGE_QUEUE_DB_PATH`, `WATCHDOG_INTERVAL_MS` /
+  `_THRESHOLD` / `_RESTART_COOLDOWN_MS` /
+  `_PENDING_REPLIES_OLDER_THAN_SECS`, `LOG_LEVEL`). `makeSdNotify()`
+  returns no-op on Mac; on Linux (when `$NOTIFY_SOCKET` is set) shells
+  out to `systemd-notify WATCHDOG=1`; falls back to no-op silently if
+  `systemd-notify` is missing. Main wraps it with SIGTERM/SIGINT
+  handling and clean exit.
+- `launchd/com.argus.watchdog.plist` — template with `__WATCHDOG_DIR__`,
+  `__BUN_BIN__`, `__USER_PATH__`, `__HOME__`, `__OMC_STATE_DIR__`
+  placeholders. RunAtLoad + KeepAlive=true; launchd is the meta-watchdog.
+- `scripts/watchdog/run.sh` — thin launchd wrapper. Lighter than the
+  bridge's: no secrets to source. Resolves bun via BUN_BIN /
+  $HOME/.bun/bin/bun / PATH. Bash strict-mode.
+- `scripts/install-mac.sh` — new `section_watchdog()` registered between
+  `section_bridge` and `section_launchd`, with the same atomic-write +
+  plutil-lint + residual-placeholder check pattern used by neighbours.
+
+#### Key design notes
+
+- **Modular Check interface**: every probe is a class implementing
+  `{name, check(), restart()}`. Concrete checks compose with a
+  ServiceManager (launchctl on Mac / systemctl on Linux) so cross-OS
+  reuse is trivial. The Runner only sees the interface — adding a new
+  check (e.g. `cloudflared`) is a single new file + one line in
+  `index.ts`'s `checks` array.
+- **Dead-man's-switch independence**: when clawhip is the unhealthy
+  daemon being escalated, we cannot route the alert THROUGH clawhip.
+  `OMCNativeCallbackDeadMan` shells out to `omc emit` directly, which
+  writes to OMC's own native callback bridge (Discord/Telegram via
+  `~/.claude/omc/native-callback.toml` — independent of clawhip's
+  webhook router). If THAT's also down, there's no further escalation;
+  the watchdog logs the failure and continues so a future tick can try
+  again once anything heals.
+- **Cooldown is per-check, not global**: `Escalator.lastRestartAt` is a
+  `Map<checkName, timestamp>` — a clawhip restart attempt at t=0 does
+  not block a bridge restart attempt at t=10s. This is correct
+  isolation: each daemon has independent failure modes.
+- **Counter semantics**: counter increments on every unhealthy tick;
+  resets on a healthy tick OR on `escalation.action === "restarted"`
+  (we trust the restart took effect; the next failure starts a fresh
+  consecutive-failure run). This means a flapping check (alternating
+  healthy / unhealthy) never escalates because the counter never reaches
+  threshold — by design. Sustained outages are what we want to escalate.
+- **Crash-resistance**: The runner catches per-check exceptions inside
+  `runOneCheck` (folds to `healthy:false`); catches escalator throws in
+  the tick loop (logs and continues); catches sdNotify throws (logs);
+  catches tick throws inside the run loop (last-resort log + continue).
+  If the whole process dies anyway, launchd KeepAlive=true respawns it.
+- **systemd watchdog protocol**: `makeSdNotify()` is a callable returned
+  from boot; the Runner calls it once per successful tick. The Linux
+  systemd unit (Block 4) will set `Type=notify`, `WatchdogSec=60`, and
+  `Restart=on-watchdog`. If the watchdog stops ticking, systemd kills
+  and restarts it — proper hardware-watchdog semantic.
+- **pending-replies expiry inside the watchdog (not the bridge)**: the
+  bridge's `OutboundQueue.expirePendingReplies()` was implemented in
+  Phase B but never invoked from production code. Putting the call in
+  the watchdog rather than adding a periodic timer in the bridge keeps
+  the bridge focused on its single-consumer dispatch responsibility,
+  and means a bridge that's stuck behind a long Telegram API call
+  doesn't also delay the expiry pass.
+
+#### Verification
+
+Run from `scripts/watchdog/`:
+
+- `bun install` — 45 packages, lockfile committed
+- `bun run typecheck` — clean (`tsc --noEmit`)
+- `bun test` — 60 pass / 0 fail / 137 expect() calls across 7 files
+  - 8 platform tests
+  - 9 clawhip-check tests, 9 bridge-check tests, 8 omc-wait-check tests
+  - 8 pending-replies-check tests
+  - 14 escalation tests (Escalator + MockDeadMan + OMCNativeCallbackDeadMan)
+  - 10 runner tests
+- `bun run lint` — clean (biome)
+- `bash -n scripts/install-mac.sh` — clean
+- `bash -n scripts/watchdog/run.sh` — clean
+- Rendered plist passes `plutil -lint` with zero residual `__TOKEN__`
+  placeholders.
+
+CLI smoke (interval_ms=50ms, no live services on the worktree machine):
+
+```
+$ WATCHDOG_INTERVAL_MS=50 LOG_LEVEL=info NODE_ENV=production bun run src/index.ts
+{"msg":"argus-watchdog booting","checks":["clawhip","bridge","omc-wait","pending-replies"]}
+{"msg":"check unhealthy","check":"clawhip","failures":1,"detail":"GET http://127.0.0.1:25294/status threw: Unable to connect..."}
+{"msg":"escalation decision","check":"clawhip","action":"throttled","detail":"failures=1 < threshold=2"}
+... (failure 2 → restart attempt → launchctl exit=113 (no service registered)
+                → dead-man fallback → omc not on PATH → FATAL log) ...
+$ kill -TERM <pid>
+{"msg":"shutting down","signal":"SIGTERM"}
+{"msg":"watchdog runner stopping (signal aborted)"}
+{"msg":"clean exit"}
+exit=0
+```
+
+Behavior matches design: checks fire, counters reach threshold, restart
+attempts hit launchctl (no live services on this dev box, so they fail
+with exit=113 — expected), dead-man fallback attempts `omc emit`
+(absent here, so logs FATAL — also expected), and SIGTERM produces a
+clean exit code 0. Per-check counter increment + per-check cooldown
+behavior all verified in the live log stream.
+
+#### Chaos scenarios documented
+
+Block 2 spec calls out two manual chaos tests for Task 2.3. These will
+be exercised against the live Mac stack in Block 6 (Smoke). For now,
+documented expectations:
+
+1. **Clawhip kill recovery**:
+   - Inject: `pkill -9 clawhip`
+   - Expected detection: within 60-90s (2 ticks × 30s + restart latency).
+   - Expected response: watchdog calls `launchctl kickstart -k
+     gui/<uid>/com.argus.clawhip`, KeepAlive in clawhip's plist
+     respawns it, next tick finds it healthy, counter resets.
+   - Verify by tailing `~/.argus/logs/watchdog.out.log` for the
+     `escalate: restart succeeded` line.
+
+2. **Clawhip dead-man** (binary missing or service unregistered):
+   - Inject: `mv $(command -v clawhip) /tmp/clawhip.bak` and unload the
+     plist (`launchctl bootout gui/<uid>/com.argus.clawhip`).
+   - Expected detection: same 60-90s window.
+   - Expected response: launchctl kickstart fails (exit=113), the
+     escalator falls through to `omc emit --tier critical --event
+     clawhip.dead-man --message ...`, OMC's native callback delivers
+     to the configured CRITICAL Telegram channel.
+   - Verify by checking the Telegram CRITICAL chat for the
+     `clawhip.dead-man` message.
+   - Recovery: `mv /tmp/clawhip.bak $(which-was-bin) && launchctl
+     bootstrap gui/<uid> ~/Library/LaunchAgents/com.argus.clawhip.plist`.
+
+#### Deferred / open items
+
+- **systemd unit (Linux)** is Block 4 work. The runner's `sdNotify`
+  hook is wired and tested; the unit definition with `Type=notify` +
+  `WatchdogSec=60` + `Restart=on-watchdog` will be added then.
+- **clawhip route for `*.dead-man` events** — the dead-man path emits
+  via OMC's native callback (independent of clawhip), so this is not
+  blocking. But for completeness, when clawhip is healthy and a non-
+  clawhip check escalates (e.g. `bridge.dead-man` or `omc-wait.dead-man`),
+  it would be useful to ALSO route those through clawhip's normal
+  CRITICAL channel for redundancy. Phase C+ cleanup.
+- **SQL duplication between bridge and watchdog** for `pending_replies`.
+  Tracked in `src/checks/pending-replies.ts` header comment as a Phase
+  C+ extract-shared-package task.
+- **Live chaos verification (kill clawhip / move binary)** is deferred
+  to Block 6 (Smoke), where it's run against the full live stack. The
+  CLI smoke above only validates the watchdog's wiring; full
+  verification needs an actually-running clawhip + bridge to bounce.
