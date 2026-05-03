@@ -19,7 +19,31 @@ require_brew() {
 }
 
 # Sections — filled in across Phase A tasks
-section_brew_packages() { :; }
+section_brew_packages() {
+  local pkgs=(tmux node@20 cloudflared)
+  log "Ensuring Homebrew packages: ${pkgs[*]}"
+  for p in "${pkgs[@]}"; do
+    if brew list --formula "$p" >/dev/null 2>&1; then
+      log "  $p already installed"
+    else
+      log "  installing $p"
+      brew install "$p"
+    fi
+  done
+  # node@20 is keg-only on brew; ensure it's on PATH for this shell session
+  if ! command -v node >/dev/null 2>&1; then
+    warn "node not on PATH — you may need to add: $(brew --prefix node@20)/bin"
+  fi
+  # Rust via rustup (cargo isn't ideally a brew package — use rustup for clean toolchain mgmt)
+  if ! command -v cargo >/dev/null 2>&1; then
+    log "Installing rustup (Rust toolchain) via official installer"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
+  else
+    log "  cargo already on PATH ($(cargo --version))"
+  fi
+}
 section_omc()           { :; }
 section_clawhip()       { :; }
 section_discord()       { :; }

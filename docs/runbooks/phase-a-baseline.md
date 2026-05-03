@@ -28,3 +28,12 @@ do NOT delete history. Future-you (and the VPS phase) reads this.
 ## Findings (chronological)
 
 (Append below as you complete each task. Format: `### YYYY-MM-DD HH:MM — Task N: <one-line summary>` then prose.)
+
+### 2026-05-03 HH:MM — Task 2: brew packages installed
+
+- tmux: <version>
+- node: <version>
+- cargo: <version>
+- cloudflared: <version> (installed but unused in Phase A; reserved for Phase B+)
+
+Notes: <anything that surprised you>
