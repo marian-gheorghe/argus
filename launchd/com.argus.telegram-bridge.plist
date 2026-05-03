@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.argus.telegram-bridge</string>
+
+    <!--
+      ProgramArguments invokes a thin wrapper (run.sh) instead of bun directly.
+      The wrapper sources $HOME/.argus/secrets.env so that secrets never appear
+      in this plist (which sits at $HOME/Library/LaunchAgents and is therefore
+      readable by anything in the user session). Keeps secret distribution
+      to a single file with chmod 0600.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BRIDGE_DIR__/run.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__USER_PATH__</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>BUN_BIN</key>
+        <string>__BUN_BIN__</string>
+        <key>BRIDGE_PORT</key>
+        <string>9501</string>
+        <key>BRIDGE_HOST</key>
+        <string>127.0.0.1</string>
+        <key>LOG_LEVEL</key>
+        <string>info</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>OMC_GATES_DIR</key>
+        <string>__OMC_STATE_DIR__/gates</string>
+        <key>QUEUE_DB_PATH</key>
+        <string>__HOME__/.argus/state/bridge-queue.sqlite</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>__BRIDGE_DIR__</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.argus/logs/telegram-bridge.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.argus/logs/telegram-bridge.err.log</string>
+</dict>
+</plist>
