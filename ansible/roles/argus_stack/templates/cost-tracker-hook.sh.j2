@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+{{ ansible_managed | comment }}
+# Argus — cost-tracker Claude Code PostToolUse hook wrapper. Mirrors what
+# scripts/install-mac.sh's section_cost_tracker generates on Mac.
+set -euo pipefail
+exec "${BUN_BIN:-{{ argus_bun_bin }}}" run "{{ argus_repo_dir }}/scripts/cost-tracker/src/hook.ts"
