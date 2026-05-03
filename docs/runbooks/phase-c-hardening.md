@@ -952,3 +952,16 @@ blocks the agent.
   audit trail. If the operator sees a misclassification, they can
   manually move the SKILL.md and add a project-specific anchor (or
   remove an accidental one) to the body.
+
+#### Fresh-worktree setup note
+
+When working from a fresh clone or a freshly-created worktree, each
+Bun subproject needs its `node_modules/` populated before its tests
+will run. One-liner from the repo root:
+
+```bash
+for d in scripts/*/; do (cd "$d" && [[ -f package.json ]] && bun install); done
+```
+
+The committed `bun.lock` files in each subproject ensure the install
+is deterministic.
