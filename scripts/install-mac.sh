@@ -32,7 +32,7 @@ require_secrets() {
 
 # Sections — filled in across Phase A tasks
 section_brew_packages() {
-  local pkgs=(tmux node@20 cloudflared)
+  local pkgs=(tmux node@20 cloudflared jq)
   log "Ensuring Homebrew packages: ${pkgs[*]}"
   for p in "${pkgs[@]}"; do
     if brew list --formula "$p" >/dev/null 2>&1; then

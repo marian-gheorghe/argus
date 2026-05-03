@@ -66,5 +66,24 @@ sink = "discord"
 url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
 format = "compact"
 
-# Phase C will add: cost.warn -> discord, cost.page/cost.kill -> bridge
-# /webhook/page+critical, harness.regression -> bridge /webhook/critical, etc.
+# Phase C: cost-tracker threshold events
+[[routes]]
+event = "cost.warn"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "cost.page"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/page"
+format = "compact"
+
+[[routes]]
+event = "cost.kill"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/critical"
+format = "compact"
+
+# Phase C will add: harness.regression -> bridge /webhook/critical,
+# clawhip.dead-man -> bridge /webhook/critical, host.rebooted -> bridge /webhook/critical, etc.
