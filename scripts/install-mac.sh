@@ -102,6 +102,15 @@ section_clawhip_config() {
   chmod 600 "$cfg"
   log "  wrote $cfg ($(wc -l < "$cfg") lines)"
 }
+section_hook_bridge() {
+  log "Ensuring clawhip's claude-code hook bridge is installed"
+  if [[ -f "$HOME/.clawhip/hooks/native-hook.mjs" ]]; then
+    log "  hook bridge already present at $HOME/.clawhip/hooks/native-hook.mjs"
+  else
+    log "  installing via clawhip plugin install claude-code"
+    clawhip plugin install claude-code
+  fi
+}
 section_launchd()       { :; }
 
 main() {
@@ -112,6 +121,7 @@ main() {
   section_omc
   section_clawhip
   section_clawhip_config
+  section_hook_bridge
   section_launchd
   log "Phase A install complete."
 }

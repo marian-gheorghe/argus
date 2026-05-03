@@ -64,3 +64,9 @@ Notes: <any cargo warnings, openssl issues, etc.>
 - $HOME/.clawhip/config.toml generated: yes
 - `clawhip send` test message visible in Discord: yes/no
 - Lag observed: <seconds>
+
+### 2026-05-03 HH:MM — Task 8: hook bridge installed
+
+- ~/.clawhip/hooks/native-hook.mjs exists: yes
+- ~/.claude/settings.json updated: yes
+- Hooks registered: <SessionStart, Stop, PostToolUse, UserPromptSubmit, etc.>
