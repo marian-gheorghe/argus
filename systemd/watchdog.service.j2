@@ -1,0 +1,42 @@
+{{ ansible_managed | comment }}
+# Argus — watchdog systemd --user unit. Mirrors com.argus.watchdog.plist.
+#
+# Type=notify + WatchdogSec lets systemd KILL+restart the process if it stops
+# ticking — the same loop-completed-per-tick semantic that on Mac is best-
+# effort via launchd KeepAlive. Restart=on-watchdog reacts specifically to
+# missed sd_notify pings.
+
+[Unit]
+Description=Argus watchdog (modular health checks + dead-man's-switch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WorkingDirectory={{ argus_repo_dir }}/scripts/watchdog
+Environment=HOME={{ argus_user_home }}
+Environment=PATH={{ argus_user_home }}/.bun/bin:{{ argus_npm_global_prefix }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BUN_BIN={{ argus_bun_bin }}
+Environment=LOG_LEVEL=info
+Environment=NODE_ENV=production
+Environment=WATCHDOG_INTERVAL_MS={{ watchdog_interval_ms }}
+Environment=WATCHDOG_THRESHOLD={{ watchdog_threshold }}
+Environment=WATCHDOG_RESTART_COOLDOWN_MS={{ watchdog_restart_cooldown_ms }}
+Environment=WATCHDOG_PENDING_REPLIES_OLDER_THAN_SECS={{ watchdog_pending_replies_older_than_secs }}
+Environment=BRIDGE_QUEUE_DB_PATH={{ argus_argus_dir }}/state/bridge-queue.sqlite
+Environment=OMC_STATE_DIR={{ argus_state_dir }}
+ExecStart={{ argus_bun_bin }} run {{ argus_repo_dir }}/scripts/watchdog/src/index.ts
+Restart=on-watchdog
+RestartSec=5
+WatchdogSec=60
+StandardOutput=append:{{ argus_argus_dir }}/logs/watchdog.out.log
+StandardError=append:{{ argus_argus_dir }}/logs/watchdog.err.log
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ argus_argus_dir }}/logs {{ argus_argus_dir }}/state {{ argus_state_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

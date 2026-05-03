@@ -1,0 +1,28 @@
+{{ ansible_managed | comment }}
+# Argus — OMC wait daemon. Mirrors com.argus.omc-wait.plist.
+# Long-poll waiter that consumes pending OMC operations.
+
+[Unit]
+Description=Argus OMC wait daemon
+After=network-online.target clawhip.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ argus_omc_bin }} wait --start
+Restart=always
+RestartSec=5
+Environment=HOME={{ argus_user_home }}
+Environment=PATH={{ argus_npm_global_prefix }}/bin:/usr/local/bin:/usr/bin:/bin
+Environment=OMC_STATE_DIR={{ argus_state_dir }}
+StandardOutput=append:{{ argus_argus_dir }}/logs/omc-wait.out.log
+StandardError=append:{{ argus_argus_dir }}/logs/omc-wait.err.log
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ argus_argus_dir }}/logs {{ argus_state_dir }}
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
