@@ -156,5 +156,26 @@ sink = "webhook"
 url = "http://127.0.0.1:9501/webhook/critical"
 format = "compact"
 
+# Phase C Block 5 — knowledge accumulation events.
+# learner.collision: emitted when /learner produces a skill whose
+# triggers overlap with an existing skill's. WARN-tier — operator
+# decides whether to merge or rephrase. Posted to #runs-info so it's
+# visible without paging.
+[[routes]]
+event = "learner.collision"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+# learner.notepad-summarized: emitted when notepad.md crosses the
+# 500-line cap and is compressed. INFO-tier — purely informational,
+# helps operators see when the long-running notepads are being
+# trimmed.
+[[routes]]
+event = "learner.notepad-summarized"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
 # Phase C will add: harness.regression -> bridge /webhook/critical,
 # clawhip.dead-man -> bridge /webhook/critical, host.rebooted -> bridge /webhook/critical, etc.
