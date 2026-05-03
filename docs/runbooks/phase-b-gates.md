@@ -6,8 +6,9 @@ Living log of the Phase B install on macOS. Append findings as you go.
 - [ ] Task 1: Telegram bot creation (operator manual; deferred)
 - [x] Task 2: Bridge project bootstrap + Bun install
 - [x] Tasks 3,4,5: schemas + queue + telegram client (TDD)
-- [ ] Tasks 6,7,8: HTTP receiver + dispatcher + gate watcher (TDD)
-- [ ] Tasks 9,10: render + callback handler (TDD)
+- [x] Tasks 6,7,8: HTTP receiver + dispatcher + gate watcher (TDD)
+- [x] Task 9: index wire-up (server + dispatcher + gate-watcher with graceful drain)
+- [ ] Task 10: callback handler (TDD)
 - [ ] Tasks 11,12,13: Cloudflare Tunnel + bridge launchd + clawhip routes
 - [ ] Task 14: OMC dispatcher skill (gate state machine)
 - [ ] Tasks 15,16: 24h smoke + verdict (operator manual)
@@ -48,3 +49,25 @@ Living log of the Phase B install on macOS. Append findings as you go.
   - `phase-b: durable sqlite outbound queue with dedup, retry backoff, parking lot`
   - `phase-b: telegram API client with transient/permanent error classification`
   - `phase-b: runbook entry for tasks 3-5 (schemas, queue, telegram client)`
+
+### 2026-05-03 — Tasks 6, 7, 8, 9: HTTP receiver, dispatcher, gate watcher, index wire-up (TDD)
+- All four landed as separate red→green commits.
+- **Task 6 (HTTP receiver):** `src/server.ts` with `buildApp({queue, log})` factory so tests inject deps; `src/index.ts` is now the only place `Bun.serve` is called. Routes: `GET /health`, `POST /webhook/{info,warn,page,critical,gate}`, `POST /telegram` (Task 10 will fill the handler). Each `/webhook/*` parses JSON → `ClawhipWebhookEvent.safeParse` → 400 with structured zod issues on fail → enqueue with `tier` hint baked into the queued payload (`{tier, event}` shape — `QueuedPayload`). Returns `{accepted, queued_id, deduplicated}` so the receiver clearly distinguishes first-time enqueues from dedup hits. `verifyTelegramSecret` is a pass-through stub for Task 6; full HMAC check lands in Task 10. 14 new tests; existing `health.test.ts` migrated off `import { app } from "../src/index.ts"` (which would now eagerly open a sqlite DB) onto a `buildApp({tempQueue, silentLog})` fixture.
+- **Task 7 (dispatcher):** `src/dispatcher.ts` with `class Dispatcher` exposing `tick(): Promise<TickResult>` for unit tests and `run(signal: AbortSignal)` for the production loop. Policy split: `TransientError` → `markFailed(backoff_secs)`; `PermanentError` → `parkPermanent`; render returning `null` → park immediately; after `maxAttemptsBeforePark` (default 5) consecutive transients → park. The render function is injected (`RenderFn` type) so Task 9 can plug in the rich gate-message renderer without changing the dispatcher; for now `src/render.ts` exports `defaultRender` that picks `chat_id` from `chatIds` based on `tier` and uses `event.message` verbatim. `run()` uses `await sleep(IDLE_SLEEP_MS=500, signal)` between empty ticks with a clean abort path (timeout cleared, listener removed) so SIGTERM doesn't leak handles. 11 new tests. Mocked telegram client with a `stubTelegram(impl)` factory mirroring the pattern from `telegram.test.ts`.
+- **Task 8 (gate watcher):** Added `chokidar@^5` (the only new runtime dep this session). `src/gate-watcher.ts` exposes `class GateWatcher` with `start(signal)` (resolves once chokidar's `ready` fires — i.e. after the startup sweep is complete) and `stop()`. Each `*.pending.json` is read → `JSON.parse` → `GatePending.safeParse`; valid gates get a deterministic `event_id = "gate.pending:" + gate_id` so re-enqueues dedup at the queue layer. Payload is shaped as a `ClawhipWebhookEvent` with `event: "gate.pending"`, `severity: "info"`, `tier: "gate"` so it flows through the same render path as a clawhip-webhook-emitted gate event would. Non-`*.pending.json` files (incl. `*.decision.json` written by Task 10 and stray `foo.txt`) are ignored. Malformed JSON is logged at warn and skipped — watcher keeps running. 7 new tests using real fs writes + a 300ms wait for chokidar's `awaitWriteFinish` debounce.
+- **Task 9 (index wire-up):** `src/index.ts` constructs queue + telegram + chatIds + dispatcher + gate-watcher from env, mounts the app, and runs the graceful drain on SIGTERM/SIGINT: `server.stop()` (no new webhooks) → `stopController.abort()` (dispatcher + watcher exit) → `gateWatcher.stop()` (close chokidar) → `await dispatcherPromise` (drain in-flight) → `queue.close()` → `process.exit(0)`. All env vars from spec wired: `BRIDGE_PORT`, `BRIDGE_HOST`, `LOG_LEVEL`, `QUEUE_DB_PATH` (default `$HOME/.argus/state/bridge-queue.sqlite`, parent `mkdir -p`'d), `OMC_GATES_DIR` (default `$HOME/.claude/omc/gates`, also `mkdir -p`'d), `TELEGRAM_BOT_TOKEN` (required), `TELEGRAM_CHAT_ID_{INFO,WARN,PAGE,CRITICAL,GATES}` (required, integer-validated). `import.meta.main` guard preserved so test files importing `index.ts` (none currently — health.test.ts uses `buildApp` directly) wouldn't bind ports.
+- **Tradeoffs / design choices made within the spec's bounds:**
+  - **Tier in payload, not in queue schema:** the HTTP route (`/webhook/info` etc.) and the gate watcher both write `{tier, event}` into the JSON payload column rather than introducing a new sqlite column. Keeps the `OutboundQueue` agnostic to routing concerns; the dispatcher's render function owns the `tier → chat_id` translation.
+  - **Mockable dispatcher:** `tick()` is a pure single-step function (peek → render → send → mark/park) with no internal sleeping, which makes it easy to unit-test without fake clocks. `run()` adds the loop and abort-aware sleep on top. Tests mock the `TelegramClient` via a `stubTelegram` factory rather than mocking `fetch` (one level higher than the telegram-client tests, which is appropriate for a higher-level component test).
+  - **`defaultRender` is the simplest possible:** picks chat by tier, uses `event.message` verbatim, returns `null` for malformed payloads (so the dispatcher parks). Task 9-spec-replacement (the rich gate-card renderer with markdown body + inline keyboard) will replace it for `tier === "gate"`.
+  - **chokidar over `fs.watch`:** macOS recursive `fs.watch` returns paths relative to the watched dir but Linux's `inotify`-backed watch coalesces events differently; chokidar normalizes both and adds `awaitWriteFinish` for partially-written files. Single new dep, well worth it for a watcher this small.
+  - **Gate watcher startup sweep via chokidar's own `ready` event:** rather than implementing a separate `readdir` + manual loop, we use `ignoreInitial: false` and resolve `start()` after `ready` fires. chokidar emits `add` for every existing file before `ready`, giving us the sweep for free.
+- Verification (from `scripts/telegram-bridge/`):
+  - `bun run typecheck` → exit 0, silent.
+  - `bun test` → `93 pass / 0 fail / 199 expect() calls` across 7 files (health + schemas + queue + telegram + server + dispatcher + gate-watcher).
+  - `bun run lint` → `Checked 15 files`, no errors, no warnings.
+- Commits this session:
+  - `phase-b: hono HTTP receiver — validates and enqueues webhook events`
+  - `phase-b: dispatcher loop with retry/park policy and tier-aware routing`
+  - `phase-b: chokidar-based gate file watcher with idempotent enqueue`
+  - `phase-b: wire receiver + dispatcher + gate-watcher in index.ts; runbook`
