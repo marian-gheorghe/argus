@@ -27,3 +27,44 @@ event = "session.*"
 sink = "discord"
 url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
 format = "compact"
+
+# Phase B: route gate.pending and tier escalation events to the telegram bridge.
+# The bridge listens on http://127.0.0.1:9501 (BRIDGE_HOST/BRIDGE_PORT in
+# scripts/telegram-bridge/launchd plist). Localhost-only — no secret in the URL.
+
+[[routes]]
+event = "gate.pending"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/gate"
+format = "compact"
+
+[[routes]]
+event = "gate.timeout"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/page"
+format = "compact"
+
+# Approved gates close the loop with a low-noise INFO posting to Discord —
+# operators can scroll the channel and see "approved at 14:03 by @marian".
+[[routes]]
+event = "gate.approved"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+# WARN-tier events (degraded but progressing) go to Discord; Phase C may
+# escalate these to the bridge if operators ask for tighter feedback.
+[[routes]]
+event = "agent.failed"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "omc.rate-limit-pause"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+# Phase C will add: cost.warn -> discord, cost.page/cost.kill -> bridge
+# /webhook/page+critical, harness.regression -> bridge /webhook/critical, etc.
