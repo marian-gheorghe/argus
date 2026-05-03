@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: argus_user
+  author: argus
+  description: Provision the argus service user with SSH key + linger.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

@@ -1,0 +1,7 @@
+---
+- name: Restart tailscaled
+  ansible.builtin.systemd:
+    name: tailscaled
+    state: restarted
+    enabled: true
+  become: true

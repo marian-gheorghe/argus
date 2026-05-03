@@ -1,0 +1,9 @@
+---
+# Default variables for the `argus_user` role.
+argus_user: argus
+argus_user_uid: 1001
+argus_user_home: "/home/{{ argus_user }}"
+argus_user_shell: /bin/bash
+argus_user_groups:
+  - systemd-journal
+admin_ssh_pubkey: ""  # required from group_vars (no default)
