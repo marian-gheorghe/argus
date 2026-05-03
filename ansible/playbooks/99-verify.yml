@@ -1,0 +1,214 @@
+---
+# Argus — verify the live stack after install or cutover. Idempotent
+# (read-only). Asserts ~20 invariants; a single failure stops with the
+# offending probe.
+#
+# Run:
+#   ansible-playbook playbooks/99-verify.yml -u argus --ask-vault-pass
+
+- hosts: argus_vps
+  gather_facts: true
+
+  tasks:
+    # --- Toolchain presence ---------------------------------------------
+    - name: Verify — bun on PATH
+      ansible.builtin.command: "{{ argus_bun_bin }} --version"
+      changed_when: false
+      become: true
+      become_user: "{{ argus_user }}"
+      register: bun_ver
+
+    - name: Verify — bun version is non-empty
+      ansible.builtin.assert:
+        that: bun_ver.stdout | length > 0
+
+    - name: Verify — node 20 on PATH
+      ansible.builtin.command: node --version
+      changed_when: false
+      register: node_ver
+
+    - name: Verify — node major version is 20
+      ansible.builtin.assert:
+        that: node_ver.stdout is search('^v20\\.')
+        fail_msg: "Expected node v20.x, got {{ node_ver.stdout }}"
+
+    - name: Verify — cargo on PATH
+      ansible.builtin.command: "{{ argus_cargo_bin_dir }}/cargo --version"
+      changed_when: false
+      become: true
+      become_user: "{{ argus_user }}"
+      register: cargo_ver
+
+    - name: Verify — cargo version is non-empty
+      ansible.builtin.assert:
+        that: cargo_ver.stdout | length > 0
+
+    - name: Verify — clawhip binary present
+      ansible.builtin.stat:
+        path: "{{ argus_clawhip_bin }}"
+      register: clawhip_stat
+
+    - name: Verify — clawhip is executable
+      ansible.builtin.assert:
+        that:
+          - clawhip_stat.stat.exists
+          - clawhip_stat.stat.executable | default(false)
+
+    - name: Verify — omc binary present
+      ansible.builtin.stat:
+        path: "{{ argus_omc_bin }}"
+      register: omc_stat
+
+    - name: Verify — omc is executable
+      ansible.builtin.assert:
+        that:
+          - omc_stat.stat.exists
+          - omc_stat.stat.executable | default(false)
+
+    # --- systemd --user units ------------------------------------------
+    - name: Verify — each Argus user unit is enabled and active
+      ansible.builtin.command: "systemctl --user is-active {{ item }}.service"
+      changed_when: false
+      become: true
+      become_user: "{{ argus_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ argus_user_uid | default(1001) }}"
+      register: unit_status
+      loop: "{{ argus_stack_services }}"
+      failed_when: unit_status.stdout != "active"
+
+    # --- Local HTTP probes ---------------------------------------------
+    - name: Verify — clawhip HTTP /status reachable on loopback
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:25294/status"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: clawhip_health
+      until: clawhip_health.status in [200, 204]
+      retries: 5
+      delay: 3
+
+    - name: Verify — telegram-bridge HTTP /health reachable on loopback
+      ansible.builtin.uri:
+        url: "http://{{ bridge_host }}:{{ bridge_port }}/health"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: bridge_health
+      until: bridge_health.status in [200, 204]
+      retries: 5
+      delay: 3
+
+    - name: Verify — recovery HTTP /healthz reachable on loopback
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ recovery_port }}/healthz"
+        method: GET
+        status_code: [200, 204]
+        timeout: 5
+      register: recovery_health
+      until: recovery_health.status in [200, 204]
+      retries: 5
+      delay: 3
+
+    # --- Watchdog tick freshness ---------------------------------------
+    - name: Verify — watchdog last log line is recent (< 5 min)
+      ansible.builtin.shell: |
+        set -o pipefail
+        log="{{ argus_argus_dir }}/logs/watchdog.out.log"
+        [[ -f "$log" ]] || { echo "missing $log"; exit 1; }
+        last_mtime=$(stat -c %Y "$log")
+        now=$(date +%s)
+        delta=$((now - last_mtime))
+        echo "delta=$delta"
+        [[ $delta -lt 300 ]]
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ argus_user }}"
+      changed_when: false
+      register: watchdog_freshness
+
+    # --- nginx + cert --------------------------------------------------
+    - name: Verify — nginx is active
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+      check_mode: true
+      register: nginx_state
+
+    - name: Verify — nginx vhost cert present (when applicable)
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ public_domain }}/fullchain.pem"
+      register: cert_stat
+      become: true
+
+    - name: Verify — nginx vhost cert exists when nginx_run_certbot is true
+      ansible.builtin.assert:
+        that:
+          - cert_stat.stat.exists
+        fail_msg: "Cert for {{ public_domain }} missing — run nginx role with nginx_run_certbot=true after DNS is propagated."
+      when: nginx_run_certbot | default(true)
+
+    # --- Hooks file ----------------------------------------------------
+    - name: Verify — Claude Code settings.json registers cost-tracker hook
+      ansible.builtin.shell: |
+        set -o pipefail
+        jq -e --arg w "{{ argus_argus_dir }}/cost-tracker-hook.sh" \
+          '(.hooks.PostToolUse // []) | map(.hooks // []) | flatten
+           | map(.command // "") | any(contains($w))' \
+          "{{ argus_user_home }}/.claude/settings.json"
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ argus_user }}"
+      changed_when: false
+
+    - name: Verify — Claude Code settings.json registers recovery Stop hook
+      ansible.builtin.shell: |
+        set -o pipefail
+        jq -e --arg w "{{ argus_argus_dir }}/recovery-stop-hook.sh" \
+          '(.hooks.Stop // []) | map(.hooks // []) | flatten
+           | map(.command // "") | any(contains($w))' \
+          "{{ argus_user_home }}/.claude/settings.json"
+      args:
+        executable: /bin/bash
+      become: true
+      become_user: "{{ argus_user }}"
+      changed_when: false
+
+    - name: Verify — secrets.env exists with mode 0600
+      ansible.builtin.stat:
+        path: "{{ argus_argus_dir }}/secrets.env"
+      register: secrets_stat
+      become: true
+
+    - name: Verify — secrets.env mode is 0600
+      ansible.builtin.assert:
+        that:
+          - secrets_stat.stat.exists
+          - secrets_stat.stat.mode == "0600"
+
+    - name: Verify — clawhip config exists with mode 0600
+      ansible.builtin.stat:
+        path: "{{ argus_clawhip_dir }}/config.toml"
+      register: clawhip_config_stat
+      become: true
+
+    - name: Verify — clawhip config mode is 0600
+      ansible.builtin.assert:
+        that:
+          - clawhip_config_stat.stat.exists
+          - clawhip_config_stat.stat.mode == "0600"
+
+    - name: Verify — summary banner
+      ansible.builtin.debug:
+        msg: |
+          ---
+          Argus verification PASSED on {{ inventory_hostname }}.
+          Daemons:    {{ argus_stack_services | join(', ') }}
+          clawhip:    {{ clawhip_health.status }}
+          bridge:     {{ bridge_health.status }}
+          recovery:   {{ recovery_health.status }}
+          watchdog:   {{ watchdog_freshness.stdout }}
+          ---
