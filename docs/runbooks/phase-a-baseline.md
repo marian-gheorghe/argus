@@ -37,3 +37,11 @@ do NOT delete history. Future-you (and the VPS phase) reads this.
 - cloudflared: <version> (installed but unused in Phase A; reserved for Phase B+)
 
 Notes: <anything that surprised you>
+
+### 2026-05-03 HH:MM — Task 3: OMC installed
+
+- OMC version: <output of `omc --version`>
+- Claude CLI version: <output of `claude --version`>
+- omc doctor: <pass/fail summary>
+
+Notes: <any prompts that surprised you during omc setup>

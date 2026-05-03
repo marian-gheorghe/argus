@@ -44,7 +44,16 @@ section_brew_packages() {
     log "  cargo already on PATH ($(cargo --version))"
   fi
 }
-section_omc()           { :; }
+section_omc() {
+  log "Ensuring OMC (oh-my-claude-sisyphus) is installed"
+  if command -v omc >/dev/null 2>&1; then
+    log "  omc already on PATH ($(omc --version 2>/dev/null || echo 'version unknown'))"
+  else
+    log "  installing oh-my-claude-sisyphus globally via npm"
+    npm install -g oh-my-claude-sisyphus@latest
+  fi
+  log "  omc binary at: $(command -v omc)"
+}
 section_clawhip()       { :; }
 section_discord()       { :; }
 section_launchd()       { :; }
