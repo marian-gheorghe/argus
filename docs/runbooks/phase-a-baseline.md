@@ -51,3 +51,10 @@ Notes: <any prompts that surprised you during omc setup>
 - Path: $HOME/.claude/omc
 - Shell rc updated: <which file>
 - omc doctor still green: yes/no
+
+### 2026-05-03 HH:MM — Task 5: clawhip installed
+
+- clawhip version: <version>
+- Build time: <minutes> on <Apple Silicon / Intel>
+
+Notes: <any cargo warnings, openssl issues, etc.>

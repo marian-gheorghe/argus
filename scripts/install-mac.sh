@@ -68,7 +68,17 @@ section_omc() {
   fi
   mkdir -p "$OMC_STATE_DIR"
 }
-section_clawhip()       { :; }
+section_clawhip() {
+  log "Ensuring clawhip is installed (cargo install)"
+  if command -v clawhip >/dev/null 2>&1; then
+    log "  clawhip already on PATH ($(clawhip --version 2>/dev/null || echo 'version unknown'))"
+  else
+    log "  installing clawhip via cargo (this can take 2-5 min on first build)"
+    cargo install clawhip
+  fi
+  log "  clawhip binary at: $(command -v clawhip)"
+  log "  clawhip config dir: $HOME/.clawhip (will be populated in Task 7)"
+}
 section_discord()       { :; }
 section_launchd()       { :; }
 
