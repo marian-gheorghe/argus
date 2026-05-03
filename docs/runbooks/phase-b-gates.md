@@ -7,8 +7,8 @@ Living log of the Phase B install on macOS. Append findings as you go.
 - [x] Task 2: Bridge project bootstrap + Bun install
 - [x] Tasks 3,4,5: schemas + queue + telegram client (TDD)
 - [x] Tasks 6,7,8: HTTP receiver + dispatcher + gate watcher (TDD)
-- [x] Task 9: index wire-up (server + dispatcher + gate-watcher with graceful drain)
-- [ ] Task 10: callback handler (TDD)
+- [x] Task 9 (rich gate-message renderer with markdown + inline keyboard)
+- [x] Task 10: callback handler (TDD) — atomic decision write + HMAC + reject reply flow
 - [ ] Tasks 11,12,13: Cloudflare Tunnel + bridge launchd + clawhip routes
 - [ ] Task 14: OMC dispatcher skill (gate state machine)
 - [ ] Tasks 15,16: 24h smoke + verdict (operator manual)
@@ -71,3 +71,45 @@ Living log of the Phase B install on macOS. Append findings as you go.
   - `phase-b: dispatcher loop with retry/park policy and tier-aware routing`
   - `phase-b: chokidar-based gate file watcher with idempotent enqueue`
   - `phase-b: wire receiver + dispatcher + gate-watcher in index.ts; runbook`
+
+### 2026-05-03 — Tasks 9, 10: rich gate renderer + telegram callback handler (TDD)
+
+Three review-followup fixes from Tasks 6-8 review landed in a small first commit before the main work:
+- **Fix 1 (graceful drain):** `index.ts` shutdown now `await server.stop(true)` so in-flight HTTP requests drain before the dispatcher and queue are torn down. Closes a race where a clawhip POST arriving exactly at SIGTERM could be killed mid-enqueue.
+- **Fix 3 (lazy queue construction):** the top-level `OutboundQueue` construction was moved inside the `import.meta.main` guard. A bare `import "./index.ts"` no longer eagerly opens a sqlite file. The unused top-level `app`/`queue`/`log` re-exports were dropped — tests use `buildApp` directly.
+- **Fix 2 (fail-closed HMAC stub):** rolled into the Task 10 commit — the stub middleware was replaced with a real constant-time HMAC verification rather than retaining an interim "set-but-not-impl → 500" stub.
+
+**Task 9 (rich gate renderer):** `src/render-gate.ts` exposes a pure `renderGateMessage(event, chat_id_gates)` returning the design §4.4 card body (header line with title + run-id, summary section, optional key-decisions bullets, artifact path, diff line, formatted timeout) plus a 3-button inline keyboard (`gate_id:approve`, `gate_id:reject`, `gate_id:defer`). Defensive null returns: missing/empty `gate_id`, `summary`, `artifact_path`, or `timeout_at`, an unparseable `timeout_at`, or a non-array `key_decisions` all return null so the dispatcher parks. Console.warn names the specific field for the operator. Long summaries (>1500 chars) are character-truncated with a `…(truncated)` suffix; phase-C may upgrade to markdown-aware truncation if it surfaces. `src/render.ts` exports a top-level `render` symbol that dispatches on `tier === "gate"` to the new renderer and falls back to `defaultRender` for everything else; `src/index.ts` is wired to `render` while dispatcher tests still inject their own trivial render so the swap-in is transparent. 18 new render-gate tests.
+
+**Task 10 (callback handler):** `src/handle-callback.ts` exposes `buildCallbackHandler({queue, telegram, gatesDir, log, allowedChatId, expectedSecret})` returning a Hono handler wired into `POST /telegram`.
+- Accepts two Telegram Update shapes: `{callback_query}` (button tap) and `{message}` (text reply, used to capture the rejection reason for force_reply prompts).
+- Approve / defer → atomic decision-file write (tmp + `fsyncSync(fd)` + `renameSync`, mode 0600) + `answerCallbackQuery`. The fsync forces data to stable storage before the rename so a crash mid-rename can't lose the operator's decision. **NON-NEGOTIABLE** per the spec; verified in code, not just claimed.
+- Reject → `sendMessage` with `force_reply: true`, insert `pending_replies` row keyed on `(chat_id, user_id)` with the prompt's `message_id`, `answerCallbackQuery` "Awaiting reason". Then a subsequent `{message}` arriving at the same endpoint that matches an existing pending row finalizes the rejection as `decision: "rejected"` with the typed text as `comment`, deletes the pending row.
+- Allowlist: only `chatIds.gates` accepted; foreign chats → 403.
+- HMAC: `expectedSecret` (from `TELEGRAM_WEBHOOK_SECRET`) gates the route via **constant-time string compare** against `X-Telegram-Bot-Api-Secret-Token` — no `===` on the secret string. When env unset, the header is ignored (dev/local mode).
+
+**Pending-replies state lives in the same sqlite DB as the outbound queue:** added a new `pending_replies` table to `OutboundQueue` with `UNIQUE(chat_id, user_id)` (so re-rejecting replaces the prior row) and four methods: `insertPendingReply` (REPLACE on conflict), `findPendingReply`, `deletePendingReply`, `expirePendingReplies(older_than_secs)`. Co-locating in the same DB keeps the bridge's persistent state to a single file and lets a future watchdog reuse the existing schema-migration path. 6 new queue tests.
+
+`src/server.ts` `buildApp` now optionally takes `telegram`, `gatesDir`, `chatIds`, `expectedSecret`. Wires the callback handler when present; returns 503 on `/telegram` when any are missing — loud-misconfig instead of silent 404. The existing `/webhook/*` and `/health` tests continue to pass with the minimal `{queue, log}` deps.
+
+`src/telegram.ts` `sendMessage` gains an optional `{force_reply}` opts arg (emits `reply_markup: {force_reply: true}`).
+
+`src/index.ts` threads `telegram`, `gatesDir`, `chatIds`, and `TELEGRAM_WEBHOOK_SECRET` into `buildApp`. All env reads centralized at the boundary; no `process.env` inside business logic.
+
+**Tradeoffs / design choices made within the spec's bounds:**
+- **Single-endpoint reject flow:** the rejection-reply message is handled at the same `/telegram` endpoint as the button tap. The spec mentioned a possible sibling endpoint; we kept it unified because Telegram's webhook posts both Update kinds to the same configured URL anyway, and dispatching by Update shape inside the handler keeps the routing logic in one place.
+- **`run_id` in decision file = `gate_id` placeholder:** the bridge doesn't have the `run_id` at decision time (it would need to read the `<gate_id>.pending.json` to recover it). For Phase B we set `run_id = gate_id` and rely on OMC to reconcile via `gate_id` (the unique key). Phase C should upgrade to read the `.pending.json` on decision so the decision file carries the true run_id for downstream observability.
+- **Pending-replies table in OutboundQueue, not a separate class:** the spec offered "OutboundQueue or a new small PendingReplies class". We kept it on `OutboundQueue` because the data lives in the same sqlite file already; introducing a second class for four methods on three columns would have been cosmetic separation only.
+- **`force_reply` API:** added a fourth optional arg to `TelegramClient.sendMessage` rather than a new method, because every other field (chat_id, text, keyboard, parse_mode) is already handled by `sendMessage` and the sole new consideration is the `reply_markup` shape.
+- **HMAC constant-time compare:** explicit char-by-char XOR loop in JS-land; we do not use `crypto.timingSafeEqual` because the input strings come from headers (variable-length, untrusted) and constructing `Buffer`s for length-mismatched inputs is itself observable. The early `length !== length` check is intentional — Telegram's secret_token is fixed-length per setWebhook, so length mismatch always means tampering rather than an accidental info leak.
+
+Verification (from `scripts/telegram-bridge/`):
+- `bun run typecheck` → exit 0, silent.
+- `bun test` → `129 pass / 0 fail / 292 expect() calls` across 9 files (was 93 across 7).
+- `bun run lint` → `Checked 19 files`, no errors, no warnings.
+
+Commits this session:
+- `phase-b: graceful drain + lazy queue construction (review followups)`
+- `phase-b: rich gate-message renderer with markdown + inline keyboard`
+- `phase-b: telegram callback handler — atomic decision writes + HMAC + reject reply flow`
+- `phase-b: runbook entry for tasks 9-10 (gate render + callback handler)`
