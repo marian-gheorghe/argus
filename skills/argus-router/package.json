@@ -1,0 +1,24 @@
+{
+  "name": "argus-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Argus — OMC dispatcher skill (gate state machine: open / await / fire / speculative-continue branch)",
+  "scripts": {
+    "dev": "bun run --watch lib/gate-controller.ts",
+    "start": "echo 'argus-router is a library; nothing to start' >&2 && exit 0",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check lib tests",
+    "format": "biome format --write lib tests"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
