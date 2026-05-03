@@ -1,0 +1,39 @@
+---
+# Argus — common baseline. Runs as root (or with become) on every argus_vps host.
+#
+# Idempotent. Re-running is safe: apt cache is only refreshed when stale,
+# package presence is checked before install, timezone/NTP are no-ops if
+# already configured.
+
+- name: Ensure apt cache is recent
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  changed_when: false
+
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  become: true
+
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+  become: true
+
+- name: Ensure systemd-timesyncd is enabled and started
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+  become: true
+
+- name: Ensure /etc/localtime symlink matches timezone
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ common_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+  become: true

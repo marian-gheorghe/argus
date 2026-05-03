@@ -1,0 +1,15 @@
+{{ ansible_managed | comment }}
+# Argus — fail2ban local override. Keeps the SSH jail enabled with a tight
+# 5-attempt window and a 1-hour ban. Mirrors a plain Debian/Ubuntu default
+# but with explicit arguments so it survives a distro update that flips them.
+
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
