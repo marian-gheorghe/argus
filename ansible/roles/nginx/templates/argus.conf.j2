@@ -1,0 +1,92 @@
+{{ ansible_managed | comment }}
+# Argus — nginx site config. Reverse-proxies external HTTPS to local
+# clawhip (:25294) and telegram-bridge (:9501).
+#
+# Both backends do their own HMAC verification (clawhip for GitHub
+# webhooks, bridge for Telegram). nginx adds TLS termination + a small
+# rate-limit + denies known-bad probes — defense in depth.
+
+# Rate limit: 30 req/min per IP across the proxy. GitHub's webhook delivery
+# is bursty but well under this; honest Telegram traffic is even lower.
+limit_req_zone $binary_remote_addr zone=argus_proxy:10m rate=30r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ public_domain }};
+
+    # ACME http-01 challenges first.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    # Everything else: redirect to HTTPS.
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {{ public_domain }};
+
+    # Certbot writes these on first run. The pre-cert config (port 80 only)
+    # is what nginx serves until the cert exists.
+    ssl_certificate /etc/letsencrypt/live/{{ public_domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ public_domain }}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/{{ public_domain }}/chain.pem;
+
+    # Modern Mozilla intermediate profile.
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # HSTS, content-type sniffing off, click-jacking off.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Tight body size for webhook payloads — GitHub events are well under 1MB.
+    client_max_body_size 2m;
+
+    # GitHub webhook -> clawhip
+    location = /clawhip/github {
+        limit_req zone=argus_proxy burst=10 nodelay;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass {{ nginx_upstream_clawhip }}/github;
+        proxy_read_timeout 30s;
+    }
+
+    # Telegram webhook -> bridge
+    location = /telegram {
+        limit_req zone=argus_proxy burst=20 nodelay;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass {{ nginx_upstream_bridge }}/telegram;
+        proxy_read_timeout 30s;
+    }
+
+    # Health endpoint for Hetzner / external monitoring.
+    location = /healthz {
+        access_log off;
+        return 200 "argus-ok\n";
+        add_header Content-Type text/plain;
+    }
+
+    # Anything else: 404 (no app surface).
+    location / {
+        return 404;
+    }
+}

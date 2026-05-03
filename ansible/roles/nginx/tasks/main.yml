@@ -1,0 +1,124 @@
+---
+# Argus — nginx + Let's Encrypt reverse proxy.
+#
+# Two-phase: (1) install nginx with a port-80-only bootstrap site so certbot
+# can complete an HTTP-01 challenge, (2) once /etc/letsencrypt/live/<domain>/
+# fullchain.pem exists, swap to the full TLS site config. This avoids the
+# classic chicken-and-egg where certbot --nginx wants a server block that
+# references an SSL cert that doesn't exist yet.
+#
+# Idempotent: certbot detects an existing valid cert and exits 0; the swap
+# from pre-cert to full config is gated on the cert path's existence.
+
+- name: nginx — install nginx + certbot
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: nginx — disable default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  become: true
+  notify: Reload nginx
+
+- name: nginx — ensure ACME webroot
+  ansible.builtin.file:
+    path: /var/www/html
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+  become: true
+
+# --- Phase 1: bootstrap site (port 80 only) for HTTP-01 challenge --------
+- name: nginx — write bootstrap site (pre-cert)
+  ansible.builtin.template:
+    src: argus-pre-cert.conf.j2
+    dest: /etc/nginx/sites-available/argus.conf
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: not (cert_already_exists | default(false))
+  notify: Reload nginx
+
+- name: nginx — enable argus site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/argus.conf
+    dest: /etc/nginx/sites-enabled/argus.conf
+    state: link
+    force: true
+  become: true
+  notify: Reload nginx
+
+- name: nginx — enabled and started
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+  become: true
+
+- name: nginx — flush handlers so reload happens before certbot
+  ansible.builtin.meta: flush_handlers
+
+# --- Detect existing cert ------------------------------------------------
+- name: certbot — does the cert already exist?
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ public_domain }}/fullchain.pem"
+  register: existing_cert
+  become: true
+
+- name: "certbot — set fact: cert_already_exists"
+  ansible.builtin.set_fact:
+    cert_already_exists: "{{ existing_cert.stat.exists | default(false) }}"
+
+# --- certbot run (issues cert if missing) -------------------------------
+- name: certbot — issue cert via webroot challenge
+  ansible.builtin.command: >
+    certbot certonly --non-interactive --agree-tos
+    --email {{ nginx_ssl_email }}
+    --webroot --webroot-path /var/www/html
+    -d {{ public_domain }}
+  become: true
+  when:
+    - nginx_run_certbot
+    - not cert_already_exists
+  register: certbot_run
+  changed_when: "'Successfully received certificate' in (certbot_run.stdout | default(''))"
+
+- name: certbot — re-stat the cert after potential issue
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ public_domain }}/fullchain.pem"
+  register: post_certbot_cert
+  become: true
+
+- name: certbot — refresh cert_already_exists
+  ansible.builtin.set_fact:
+    cert_already_exists: "{{ post_certbot_cert.stat.exists | default(false) }}"
+
+# --- Phase 2: full TLS site (only when cert exists) ---------------------
+- name: nginx — write full TLS site (when cert exists)
+  ansible.builtin.template:
+    src: argus.conf.j2
+    dest: /etc/nginx/sites-available/argus.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "nginx -t -c /etc/nginx/nginx.conf"
+  become: true
+  when: cert_already_exists
+  notify: Reload nginx
+
+- name: certbot — ensure auto-renewal timer is enabled
+  ansible.builtin.systemd:
+    name: certbot.timer
+    enabled: true
+    state: started
+  become: true
