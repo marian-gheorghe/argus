@@ -7,18 +7,14 @@ import { defaultRender } from "./render.ts";
 import { buildApp, makeLog } from "./server.ts";
 import { TelegramClient } from "./telegram.ts";
 
-const log = makeLog();
-
-const queueDbPath =
-  process.env.QUEUE_DB_PATH ?? `${process.env.HOME}/.argus/state/bridge-queue.sqlite`;
-mkdirSync(dirname(queueDbPath), { recursive: true });
-const queue = new OutboundQueue(queueDbPath);
-
-const app = buildApp({ queue, log });
-
-export { app, log, queue };
-
 if (import.meta.main) {
+  const log = makeLog();
+
+  const queueDbPath =
+    process.env.QUEUE_DB_PATH ?? `${process.env.HOME}/.argus/state/bridge-queue.sqlite`;
+  mkdirSync(dirname(queueDbPath), { recursive: true });
+  const queue = new OutboundQueue(queueDbPath);
+
   const port = Number(process.env.BRIDGE_PORT ?? 9501);
   const host = process.env.BRIDGE_HOST ?? "127.0.0.1";
 
@@ -39,6 +35,8 @@ if (import.meta.main) {
 
   const gatesDir = process.env.OMC_GATES_DIR ?? `${process.env.HOME}/.claude/omc/gates`;
   mkdirSync(gatesDir, { recursive: true });
+
+  const app = buildApp({ queue, log });
 
   const server = Bun.serve({ port, hostname: host, fetch: app.fetch });
   log.info({ port: server.port, host }, "argus-telegram-bridge listening");
@@ -63,7 +61,10 @@ if (import.meta.main) {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info({ signal }, "shutting down");
-    server.stop();
+    // Wait for in-flight HTTP requests to drain before tearing down state.
+    // Closes the race where a clawhip POST arriving exactly at SIGTERM could
+    // be killed mid-enqueue.
+    await server.stop(true);
     stopController.abort();
     await gateWatcher.stop();
     await dispatcherPromise;
