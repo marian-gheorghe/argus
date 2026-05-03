@@ -85,5 +85,76 @@ sink = "webhook"
 url = "http://127.0.0.1:9501/webhook/critical"
 format = "compact"
 
+# Phase C Block 3 — recovery automation routes.
+# argus-recovery serves on http://127.0.0.1:9601 (loopback only,
+# launchd KeepAlive=true). It receives tmux.stale + provider.outage
+# events and runs the corresponding recovery script.
+
+[[routes]]
+event = "tmux.stale"
+sink = "webhook"
+url = "http://127.0.0.1:9601/tmux-restart"
+format = "compact"
+
+[[routes]]
+event = "provider.outage"
+sink = "webhook"
+url = "http://127.0.0.1:9601/provider-fallback"
+format = "compact"
+
+# Recovery emits agent.loop-exhausted, agent.fake-completion,
+# tmux.restart-attempted/failed/exhausted/rejected, provider.fallback-engaged,
+# provider.fallback-unavailable, provider.outage-prolonged, and
+# crash-budget-exhausted. WARNs go to Discord; PAGE/CRITICAL go to the
+# bridge for Telegram fan-out.
+
+[[routes]]
+event = "agent.loop-exhausted"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "agent.fake-completion"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "tmux.restart-attempted"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "tmux.restart-exhausted"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/page"
+format = "compact"
+
+[[routes]]
+event = "provider.fallback-engaged"
+sink = "discord"
+url = "REPLACE_WITH_CLAWHIP_DISCORD_WEBHOOK_RUNS_INFO"
+format = "compact"
+
+[[routes]]
+event = "provider.fallback-unavailable"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/page"
+format = "compact"
+
+[[routes]]
+event = "provider.outage-prolonged"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/page"
+format = "compact"
+
+[[routes]]
+event = "crash-budget-exhausted"
+sink = "webhook"
+url = "http://127.0.0.1:9501/webhook/critical"
+format = "compact"
+
 # Phase C will add: harness.regression -> bridge /webhook/critical,
 # clawhip.dead-man -> bridge /webhook/critical, host.rebooted -> bridge /webhook/critical, etc.

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.argus.recovery</string>
+
+    <!--
+      Phase C Block 3 — argus-recovery serve. Receives clawhip route hooks
+      for tmux.stale and provider.outage on http://127.0.0.1:9601 (loopback
+      only). The Stop-hook subcommands (ralph-cap, fake-completion) are NOT
+      served here — they're invoked by Claude Code via ~/.claude/settings.json
+      hook entries that exec the wrapper at ~/.argus/recovery-stop-hook.sh
+      directly, since hooks only get one shot per Stop and HTTP would be
+      higher latency for no benefit.
+
+      KeepAlive=true makes launchd the meta-watchdog: if the recovery server
+      dies, launchd respawns it. The watchdog (separate plist) does NOT
+      monitor this service — recovery is a leaf in the dependency graph.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__RECOVERY_DIR__/run.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__USER_PATH__</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>BUN_BIN</key>
+        <string>__BUN_BIN__</string>
+        <key>LOG_LEVEL</key>
+        <string>info</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>OMC_STATE_DIR</key>
+        <string>__OMC_STATE_DIR__</string>
+        <key>ARGUS_DIR</key>
+        <string>__HOME__/.argus</string>
+        <key>ARGUS_RECOVERY_PORT</key>
+        <string>9601</string>
+        <key>RALPH_MAX_ITERATIONS</key>
+        <string>30</string>
+        <key>FAKE_COMPLETION_FRESHNESS_MS</key>
+        <string>300000</string>
+        <key>PROVIDER_PAGE_AFTER_MS</key>
+        <string>7200000</string>
+        <key>CRASH_BUDGET_THRESHOLD</key>
+        <string>3</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>__RECOVERY_DIR__</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.argus/logs/recovery.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.argus/logs/recovery.err.log</string>
+</dict>
+</plist>
