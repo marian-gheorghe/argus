@@ -38,5 +38,8 @@ bun.lock
 .omc/
 .clawhip/
 
-# Worktrees managed by OMC team mode
+# Worktrees managed by OMC team mode (inside <repo>/.omc/team/.../worktrees)
 worktrees/
+
+# Argus dev worktrees (this repo's own feature branches)
+.worktrees/
